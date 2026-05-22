@@ -127,3 +127,5 @@ For platforms like Render/Railway, add environment variables from `.env.example`
 ## Important Note About Memory
 
 `MemorySaver` stores LangGraph checkpoints for a given `thread_id`, but this project does not use `add_messages`, so it does not automatically append full conversational chat history. The semantic cache is responsible for reusing similar previous answers.
+
+The project runs successfully locally. The full version uses sentence-transformer embeddings, FAISS vector search, LangGraph workflows, and multiple LLM/tool agents. Free-tier deployment platforms may require higher memory than 512MB due to local embedding model loading.
