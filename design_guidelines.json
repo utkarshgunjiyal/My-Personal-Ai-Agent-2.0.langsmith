@@ -1,0 +1,124 @@
+{
+  "theme": "dark",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "vibe": "Command-center focus, objective, rigid, technical but refined.",
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "IBM Plex Sans",
+    "mono_font": "JetBrains Mono",
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-black",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-bold",
+      "h3": "text-xl font-bold",
+      "body": "text-sm md:text-base leading-relaxed",
+      "labels": "text-xs tracking-[0.2em] uppercase font-bold",
+      "code": "text-xs font-mono"
+    },
+    "rules": [
+      "CRITICAL: Do not use Inter for headings.",
+      "Headings must use tight letter spacing.",
+      "Never center align by default; align left for dense information.",
+      "Use JetBrains Mono for agent traces, scores, and JSON data."
+    ]
+  },
+  "colors": {
+    "background": "#0A0A0A",
+    "surface_primary": "#121214",
+    "surface_secondary": "#1A1A1E",
+    "border": "rgba(255, 255, 255, 0.1)",
+    "text_primary": "#FFFFFF",
+    "text_secondary": "#A1A1AA",
+    "accents": {
+      "agent_1_local": "#007AFF",
+      "agent_2_general": "#FFCC00",
+      "agent_3_web": "#34C759",
+      "agent_4_arxiv": "#FF3B30",
+      "judge_evaluator": "#FFFFFF",
+      "cache_hit": "#32ADE6"
+    },
+    "rules": [
+      "CRITICAL: Never use pure #000000. Use the tinted Obsidian #0A0A0A base.",
+      "Color is for function. 95% of UI should be monochrome. Colors only guide actions or differentiate agents.",
+      "No full-screen gradients. Use matte, flat colors.",
+      "Ensure text meets APCA standards over backgrounds."
+    ]
+  },
+  "spacing_and_layout": {
+    "system": "Generous Spacing Philosophy combined with Control Room Grid for data.",
+    "border_radius": "0px to max 4px (rounded-sm) for a brutalist, technical feel.",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-4, tight gap-4. Every pixel utilized. Cardless style, use 1px solid borders.",
+    "chat_layout": "Sidebar (w-72) for threads + Main chat area. Trace panel can be a right-side collapsible panel (w-80) or inline accordion.",
+    "rules": [
+      "Containers with borders must have internal padding (p-6 or p-8).",
+      "Grid items MUST be direct children of grid containers.",
+      "Use the 'Grid Borders' surface strategy: expose the skeleton, make the grid visible with border-collapse and border-r/border-b."
+    ]
+  },
+  "components": {
+    "auth_pages": {
+      "layout": "Split screen. Left: Abstract neural network image with bg-black/50 overlay. Right: Crisp login form.",
+      "inputs": "Shadcn inputs. No rounded corners (rounded-none). 1px border. Focus states must have high contrast (focus:ring-2 focus:ring-white)."
+    },
+    "chat_interface": {
+      "messages": "User messages: bg-white/10, right aligned. AI messages: transparent bg, left aligned. Include avatar placeholders.",
+      "input": "Sticky bottom textarea, auto-expanding, flat design, submit button inside the input container."
+    },
+    "thread_sidebar": {
+      "style": "Solid background (bg-[#0A0A0A]), hard right border. Use a list of threads with hover:bg-white/5.",
+      "typography": "Truncated text, text-sm, secondary color for dates."
+    },
+    "agent_trace_panel": {
+      "style": "Retro-Futurism / Terminal Look. Deep black background, 1px borders.",
+      "layout": "Use Shadcn Accordion or a custom stacked list.",
+      "indicators": "Use the specific accent colors to color-code each agent's contribution. Use prominent badges for Judge scores.",
+      "font": "MUST use JetBrains Mono for the raw agent output."
+    },
+    "cache_indicator": {
+      "design": "Small glowing dot (using drop-shadow-[0_0_8px_rgba(50,173,230,0.5)]) next to response. Label: 'Semantic Cache Hit'."
+    },
+    "stats_dashboard": {
+      "style": "Control Room Grid. No soft shadows.",
+      "charts": "Use Shadcn/Recharts. High-contrast lines, tooltip backgrounds must be dark.",
+      "metrics": "Large numeric typography (text-5xl font-black). Label above (text-xs tracking-[0.2em] uppercase)."
+    }
+  },
+  "motion": {
+    "interactive": "Hover states MUST explicitly change background and text (e.g., hover:bg-white hover:text-black).",
+    "focus": "Focus rings must be high contrast.",
+    "chat": "Smooth staggered entrance for messages.",
+    "rules": [
+      "Respect prefers-reduced-motion.",
+      "Do not use transition-all. Be specific (transition-colors, transition-transform)."
+    ]
+  },
+  "icons": {
+    "library": "@phosphor-icons/react",
+    "installation": "yarn add @phosphor-icons/react",
+    "usage": "Use Phosphor Icons (regular or duotone) for dense, professional tool aesthetic."
+  },
+  "images": {
+    "auth_background": {
+      "url": "https://images.pexels.com/photos/30547577/pexels-photo-30547577.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Dynamic abstract depiction of digital circuits with vivid lights.",
+      "usage": "Left side of the auth page, needs a heavy bg-black/60 overlay to maintain the dark theme."
+    },
+    "google_logo": {
+      "url": "https://images.unsplash.com/photo-1662947190722-5d272f82a526?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODl8MHwxfHNlYXJjaHwxfHxnb29nbGUlMjBsb2dvfGVufDB8fHx8MTc4MDU0NDAzNHww&ixlib=rb-4.1.0&q=85",
+      "description": "Google logo",
+      "usage": "Inside the Google SSO button."
+    },
+    "default_avatar": {
+      "url": "https://images.pexels.com/photos/20157010/pexels-photo-20157010.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Elegant portrait of a young male professional.",
+      "usage": "User profile settings avatar and chat message avatar."
+    }
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: Apply `data-testid` attributes to ALL interactive and key informational elements (buttons, links, inputs, trace panels, scores).",
+    "Use pure HTML + Tailwind for complex overlapping/asymmetric layouts if needed, but rely on Shadcn for logical components (Dialog, Accordion, Select).",
+    "Remove default border-radius from Shadcn components where possible to match the Brutalist/Swiss technical aesthetic (max rounded-sm).",
+    "Implement the agent trace panel with clear visual distinction between the 4 agents and the judge using the provided accent colors.",
+    "Do not use Inter for headings. Ensure Cabinet Grotesk (or similar geometric/grotesque sans) is used for H1-H4.",
+    "The app must feel like a production-ready 'command center'. Maintain high contrast and utilize every pixel in the dashboard grids."
+  ]
+}
