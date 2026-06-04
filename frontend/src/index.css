@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    background-color: #0a0a0a;
+    color: #ffffff;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  ::selection {
+    background: #ffffff;
+    color: #0a0a0a;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0a0a0a; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2e; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a3e; }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', 'Cabinet Grotesk', system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+  }
+
+  input,
+  textarea {
+    caret-color: #ffffff;
+  }
+}
+
+@layer components {
+  .label-eyebrow {
+    @apply text-[10px] tracking-[0.24em] uppercase font-bold text-white/50;
+  }
+  .surface {
+    @apply bg-surface-1 border border-white/10;
+  }
+  .surface-2 {
+    @apply bg-surface-2 border border-white/10;
+  }
+  .pixel-grid {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+}

@@ -1,5 +1,16 @@
 .env
+.env.local
 .venv/
 __pycache__/
 *.pyc
+*.pyo
 .DS_Store
+node_modules/
+frontend/build/
+frontend/.cache/
+.pytest_cache/
+.coverage
+coverage/
+.idea/
+.vscode/
+*.log

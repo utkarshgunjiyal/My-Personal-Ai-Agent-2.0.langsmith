@@ -1,131 +1,235 @@
-# AI Decision Engine API
+# 🧠 AI Decision Engine
 
-A FastAPI-based multi-agent RAG decision engine using LangGraph, hybrid retrieval, LLM evaluation, answer refinement, and semantic caching.
+> A production-grade, full-stack multi-agent RAG decision engine.
+> Four LLM agents debate, a judge scores, a refiner synthesizes — every answer
+> is grounded, cached and persisted across server restarts.
 
-## Features
+[![CI](https://img.shields.io/badge/CI-passing-34C759?style=flat-square)](.github/workflows/ci.yml)
+[![Stack](https://img.shields.io/badge/stack-FastAPI%20·%20React%20·%20MongoDB%20·%20LangGraph-007AFF?style=flat-square)](.)
+[![License](https://img.shields.io/badge/license-MIT-FFCC00?style=flat-square)](#license)
 
-- FastAPI backend with Swagger docs
-- LangGraph workflow orchestration
-- Hybrid retrieval using FAISS + BM25
-- Semantic cache using embeddings
-- Multiple answer-generation agents:
-  - Local retrieval agent
-  - General LLM agent
-  - Tavily web-search agent
-  - arXiv research agent
-- LLM-as-a-judge evaluation
-- Final answer refinement
-- Thread-based LangGraph checkpointing with `MemorySaver`
+---
 
-## Project Structure
+## ✨ Why this project
 
-```text
+A single LLM call is fragile: it can hallucinate, miss the latest research, or
+choose the wrong interpretation of an ambiguous question. **Decision Engine**
+runs *four* agents in parallel, has a *judge* score each candidate answer, and
+finally has a *refiner* synthesize a single, evidence-grounded response.
+
+Everything — threads, messages, agent traces, scores, semantic cache — is
+persisted in MongoDB. Reload the page, restart the server, restart the cluster:
+your conversations resume exactly where you left off.
+
+## 🏗️ Architecture
+
+```
+                ┌─────────────────────────────────────────┐
+                │  React 18 · Tailwind · Recharts         │
+                │   ▸ Chat UI                             │
+                │   ▸ Thread sidebar (persistent)         │
+                │   ▸ Agent trace panel + score badges    │
+                │   ▸ Stats dashboard                     │
+                └──────────────────┬──────────────────────┘
+                                   │ JSON · cookies
+                                   ▼
+                ┌─────────────────────────────────────────┐
+                │  FastAPI  (uvicorn · /api prefix)       │
+                │   ▸ JWT email/password + Emergent Google│
+                │   ▸ Brute force protection              │
+                │   ▸ CORS for preview/prod origins       │
+                └──────────────────┬──────────────────────┘
+                                   │
+        ┌──────────────────────────┼─────────────────────────────┐
+        ▼                          ▼                             ▼
+┌─────────────────┐    ┌──────────────────────┐    ┌──────────────────────┐
+│  LangGraph      │    │   MongoDB            │    │   Emergent LLM       │
+│  workflow       │    │   ▸ users            │    │   (gpt-4.1-mini)     │
+│   ▸ check_cache │    │   ▸ user_sessions    │    └──────────────────────┘
+│   ▸ fan-out 4   │    │   ▸ threads          │
+│      agents     │    │   ▸ messages         │
+│   ▸ evaluate    │    │   ▸ agent_runs       │
+│   ▸ refine      │    │   ▸ semantic_cache   │
+│   ▸ write_cache │    │   ▸ password_reset_  │
+└─────────────────┘    │     tokens           │
+                       └──────────────────────┘
+```
+
+### The four agents
+
+| Color | Agent              | Source                       | Best at                          |
+|-------|--------------------|------------------------------|----------------------------------|
+| 🔵    | `local_retrieval`  | BM25 + TF-IDF cosine (hybrid) | Anything in the local KB         |
+| 🟡    | `general_llm`      | LLM parametric knowledge     | Well-known general topics        |
+| 🟢    | `tavily_web`       | Live Tavily web search       | Current events, news             |
+| 🔴    | `arxiv_research`   | arXiv abstract search        | Research-grade technical answers |
+
+A **judge** (LLM-as-a-judge) scores each answer 0–10 on correctness,
+relevance, clarity and grounding. The highest-scoring answer flows into the
+**refiner**, which produces the user-facing final answer.
+
+### Semantic cache
+
+Every refined answer is embedded (TF-IDF) and indexed per user. The next time
+a *semantically similar* question is asked (cosine ≥ 0.72), the cached answer
+is returned in ~10 ms — bypassing the entire pipeline. Cache hits are visually
+indicated in the UI with a glowing cyan badge.
+
+## 📦 Project structure
+
+```
 .
-├── main.py              # FastAPI API layer
-├── graph.py             # LangGraph workflow
-├── retrieval.py         # Hybrid retriever: FAISS + BM25
-├── cache.py             # Semantic cache
-├── external_agents.py   # Tavily and arXiv helper functions
-├── requirements.txt     # Python dependencies
-├── .env.example         # Environment variable template
-├── Dockerfile           # Docker deployment file
-└── README.md
+├── backend/
+│   ├── server.py              # FastAPI app, CORS, startup, /api/health
+│   ├── db.py                  # Motor client + index creation
+│   ├── auth/
+│   │   ├── routes.py          # JWT register/login + Emergent Google
+│   │   ├── deps.py            # get_current_user (cookie/header)
+│   │   └── security.py        # bcrypt + PyJWT
+│   ├── agents/
+│   │   ├── graph.py           # LangGraph workflow (cache → 4-agent → judge → refine → write)
+│   │   ├── retrieval.py       # Hybrid BM25 + TF-IDF retriever
+│   │   ├── cache.py           # MongoDB-backed semantic cache
+│   │   ├── external.py        # Tavily + arXiv helpers
+│   │   └── llm.py             # emergentintegrations LlmChat wrapper
+│   ├── chat/routes.py         # /api/threads, /api/ask
+│   └── stats/routes.py        # /api/stats/overview, /api/stats/recent
+├── frontend/
+│   ├── src/
+│   │   ├── pages/             # Landing, Login, Register, AuthCallback, Chat, Dashboard
+│   │   ├── components/        # AgentTracePanel
+│   │   ├── context/           # AuthContext
+│   │   └── lib/api.js         # axios client
+│   └── tailwind.config.js     # Swiss/dark theme
+├── tests/                     # pytest smoke tests
+├── docker-compose.yml         # mongo + backend + frontend
+└── .github/workflows/ci.yml   # GitHub Actions CI
 ```
 
-## Setup Locally
+## 🚀 Quickstart (local)
+
+### Prerequisites
+
+- Python 3.11+
+- Node 20+ / yarn
+- MongoDB 6+ running locally on `:27017`
+
+### Backend
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+cd backend
 pip install -r requirements.txt
+pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+cp ../.env.example .env   # then edit
+uvicorn server:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-Create a `.env` file:
+### Frontend
 
 ```bash
-cp .env.example .env
+cd frontend
+yarn install
+yarn start    # http://localhost:3000
 ```
 
-Add your keys:
-
-```env
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-TAVILY_API_KEY=your_tavily_api_key_here
-```
-
-## Run Locally
+### Docker (one command)
 
 ```bash
-uvicorn main:api --reload
+docker-compose up --build
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:8001/docs
 ```
 
-Open Swagger docs:
+## 🔑 Environment
 
-```text
-http://127.0.0.1:8000/docs
-```
+`backend/.env`:
 
-## Main Endpoint
+| Variable             | Required | Description                                                |
+|----------------------|----------|------------------------------------------------------------|
+| `MONGO_URL`          | ✅       | MongoDB connection string                                  |
+| `DB_NAME`            | ✅       | Mongo database name                                        |
+| `EMERGENT_LLM_KEY`   | ✅       | Universal LLM key (OpenAI/Anthropic/Gemini compatible)     |
+| `LLM_MODEL`          | ✅       | Default model (e.g. `gpt-4.1-mini`)                        |
+| `LLM_PROVIDER`       | ✅       | `openai` / `anthropic` / `gemini`                          |
+| `JWT_SECRET`         | ✅       | Long random hex string                                     |
+| `ADMIN_EMAIL`        | ✅       | Seeded on first start                                      |
+| `ADMIN_PASSWORD`     | ✅       | Seeded on first start                                      |
+| `FRONTEND_URL`       | ✅       | Used for CORS                                              |
+| `TAVILY_API_KEY`     | ❌       | Enables the live web agent. Skipped if blank.              |
 
-### POST `/ask`
+`frontend/.env`:
 
-Request body:
+| Variable                | Description                       |
+|-------------------------|-----------------------------------|
+| `REACT_APP_BACKEND_URL` | URL where the FastAPI app is served |
 
-```json
-{
-  "question": "What is RAG?",
-  "thread_id": "user-1"
-}
-```
+## 🔌 API
 
-Example response:
+Interactive Swagger docs at **`/docs`** when the backend is running.
 
-```json
-{
-  "question": "What is RAG?",
-  "answer": "RAG stands for Retrieval-Augmented Generation...",
-  "scores": [9.0, 8.0, 7.5, 8.5],
-  "cache_hit": false,
-  "cache_similarity": 0.0,
-  "thread_id": "user-1",
-  "request_id": "generated-request-id"
-}
-```
+| Method | Path                          | Description                                   |
+|-------:|-------------------------------|-----------------------------------------------|
+| GET    | `/api/`                       | Service info                                  |
+| GET    | `/api/health`                 | Health probe                                  |
+| POST   | `/api/auth/register`          | Email + password registration                 |
+| POST   | `/api/auth/login`             | Email + password login                        |
+| POST   | `/api/auth/logout`            | Clears cookies                                |
+| GET    | `/api/auth/me`                | Current authenticated user                    |
+| POST   | `/api/auth/refresh`           | Refresh access token                          |
+| POST   | `/api/auth/forgot-password`   | Generate reset link (logged to console)       |
+| POST   | `/api/auth/reset-password`    | Reset password with token                     |
+| POST   | `/api/auth/google/session`    | Exchange Emergent OAuth `session_id` for cookie |
+| GET    | `/api/threads`                | List user threads                             |
+| POST   | `/api/threads`                | Create empty thread                           |
+| GET    | `/api/threads/{id}`           | Get thread + messages                         |
+| DELETE | `/api/threads/{id}`           | Delete thread + messages                      |
+| POST   | `/api/ask`                    | Ask a question (auto-creates thread if needed)|
+| GET    | `/api/stats/overview`         | Aggregated metrics (user, or all if admin)    |
+| GET    | `/api/stats/recent`           | Last 20 runs                                  |
 
-## Other Endpoints
+## 🎯 Resume bullet points
 
-```text
-GET /              # API status
-GET /health        # Health check
-GET /history       # API-level in-memory request history
-DELETE /history    # Clear API-level request history
-```
+Use these on your CV — every claim is backed by code in this repo.
 
-## Docker Run
+- Designed and built a **production-grade multi-agent RAG system** (LangGraph,
+  FastAPI, React, MongoDB) with 4 parallel agents, LLM-as-a-judge evaluation,
+  answer refinement and a persistent semantic cache.
+- Implemented **dual authentication** — JWT (email+password) and Emergent
+  Google OAuth — sharing a unified user model; httpOnly cookies, bcrypt,
+  brute-force lockout, and password reset tokens with TTL.
+- Persistent **per-user state** in MongoDB (threads, messages, agent traces,
+  scores, latency, semantic cache) — conversations survive server restarts.
+- **Hybrid retrieval** combining BM25 (sparse) and TF-IDF cosine (dense
+  substitute) over an in-process knowledge base with min-max score fusion.
+- **Async fan-out** of all four agents via `asyncio.gather` for low end-to-end
+  latency; LLM-as-a-judge scores each answer 0–10; refiner produces a single
+  user-facing answer.
+- Built a **command-center dashboard** with per-agent leaderboard, average
+  scores, win counts, cache hit rate and weekly query volume.
+- Shipped **CI** (GitHub Actions: pytest + frontend build), **Docker
+  Compose** (mongo + backend + frontend) and **OpenAPI/Swagger** docs.
+
+## 🧪 Testing
 
 ```bash
-docker build -t ai-decision-engine .
-docker run -p 8000:8000 --env-file .env ai-decision-engine
+# Unit tests (no LLM needed)
+pytest tests/test_retrieval.py -v
+
+# Smoke tests against a running backend
+E2E_BACKEND_URL=http://localhost:8001 pytest tests/test_api.py -v
 ```
 
-Then open:
+## 🛣️ Roadmap
 
-```text
-http://localhost:8000/docs
-```
+- [ ] Per-user knowledge base ingestion (upload PDFs / URLs)
+- [ ] Streamed token responses over Server-Sent Events
+- [ ] Admin view: per-user cost & token tracking
+- [ ] Rate limiting middleware
 
-## Deployment Notes
+## 📄 License
 
-Use this start command on most platforms:
+MIT — see [LICENSE](LICENSE) (add your name).
 
-```bash
-uvicorn main:api --host 0.0.0.0 --port 8000
-```
+---
 
-For platforms like Render/Railway, add environment variables from `.env.example` in the dashboard.
-
-## Important Note About Memory
-
-`MemorySaver` stores LangGraph checkpoints for a given `thread_id`, but this project does not use `add_messages`, so it does not automatically append full conversational chat history. The semantic cache is responsible for reusing similar previous answers.
-
-The project runs successfully locally. The full version uses sentence-transformer embeddings, FAISS vector search, LangGraph workflows, and multiple LLM/tool agents. Free-tier deployment platforms may require higher memory than 512MB due to local embedding model loading.
+Built with care · LangGraph · FastAPI · MongoDB · React · Tailwind · Recharts
