@@ -27,6 +27,8 @@ React (Tailwind, Phosphor, Recharts) → FastAPI `/api` → LangGraph workflow �
 - [x] Backend: FastAPI app with `/api` prefix, CORS, JWT auth, Google OAuth, brute force lockout, password reset, indexes, admin seed
 - [x] LangGraph workflow with concurrent agent fan-out, judge & refiner
 - [x] **Streaming `/api/ask/stream` endpoint (SSE)** — emits `cache_check`, `agent_start/complete`, `judge_scores`, `refine_token`, `done` events; UI displays a live agent-status panel and streams refined tokens in real time
+- [x] **Deployed to production** at https://career-showcase-511.emergent.host
+- [x] **README showcase**: 5 polished screenshots committed to `docs/screenshots/` + Playwright capture script at `scripts/capture_screenshots.py` to regenerate them anytime
 - [x] Hybrid retriever (BM25 + TF-IDF cosine, min-max fused)
 - [x] Persistent semantic cache (per-user, hydrates from MongoDB)
 - [x] Chat routes: list/create/get/delete threads, /ask

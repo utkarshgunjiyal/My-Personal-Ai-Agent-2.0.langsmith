@@ -30,6 +30,38 @@ the refined answer stream in token-by-token.
 
 ---
 
+## 📸 In action
+
+### 1. Hero — four live agents, ready to debate
+![Landing page](docs/screenshots/01-landing.png)
+
+### 2. Streaming engine — agents finish one by one, in real time
+The screenshot below was captured **mid-query**. `LOCAL` has already completed,
+the other three agents are still thinking. The cursor caret pulses below as
+refined tokens stream in — no spinners.
+
+![Streaming pipeline](docs/screenshots/03-streaming.png)
+
+### 3. Agent trace — every candidate, every score, fully transparent
+Each agent's raw answer, latency, and 0–10 judge score is one click away. The
+highest-scoring agent gets a `BEST` badge. The refiner picks from here.
+
+![Agent trace panel](docs/screenshots/04-trace.png)
+
+### 4. Stats dashboard — per-agent leaderboard, cache hit rate, recent runs
+Admin view shows aggregates across all users; regular users see their own.
+This is the engine's own self-reported performance — measured by its own judge.
+
+![Stats dashboard](docs/screenshots/05-dashboard.png)
+
+### 5. Sign-in — JWT + one-click Google, unified user model
+![Login screen](docs/screenshots/02-login.png)
+
+> 🔄 **Regenerate these screenshots anytime:** `python scripts/capture_screenshots.py`
+> (uses Playwright; works against the live demo or your local instance).
+
+---
+
 ## ✨ Why this project
 
 A single LLM call is fragile: it can hallucinate, miss the latest research, or
