@@ -14,3 +14,9 @@ coverage/
 .idea/
 .vscode/
 *.log
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
