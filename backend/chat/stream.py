@@ -272,28 +272,8 @@ async def _stream_engine(
         )
     pending = set(agent_tasks)
 
-    async def drain_until_all_done():
-        while pending:
-            # Wait for either: a queue event or all tasks done
-            getter = asyncio.create_task(queue.get())
-            waiter = asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            done_set, _ = await asyncio.wait(
-                [getter, asyncio.create_task(waiter)],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if getter in done_set:
-                yield getter.result()
-            else:
-                getter.cancel()
-            # Update pending
-            for t in list(pending):
-                if t.done():
-                    pending.discard(t)
-            # Drain anything left in queue
-            while not queue.empty():
-                yield queue.get_nowait()
-
-    # Simpler approach: yield from queue while tasks running.
+    # Drain events from the queue as they arrive, finishing when all agent
+    # tasks complete AND the queue is empty.
     async def event_pump():
         while True:
             # If all tasks done and queue empty, exit
