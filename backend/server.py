@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from auth.routes import router as auth_router, seed_admin
 from chat.routes import router as chat_router
+from chat.stream import router as chat_stream_router
 from db import get_db, init_indexes
 from stats.routes import router as stats_router
 
@@ -48,6 +49,7 @@ app.add_middleware(
 # ----- Routers -----
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(chat_stream_router)
 app.include_router(stats_router)
 
 

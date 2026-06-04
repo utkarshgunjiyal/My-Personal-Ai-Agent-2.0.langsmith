@@ -1,0 +1,44 @@
+{
+  "summary": "Validated the new SSE streaming endpoint /api/ask/stream (backend + UI) and confirmed full regression on all previously working flows. Backend: 25/25 pytest pass (21 existing regression + 4 new streaming tests). Frontend E2E with admin@decision-engine.dev: live-pipeline panel appears mid-stream with 4 agent cells (local_retrieval/general_llm/tavily_web/arxiv_research), streaming-answer renders tokens during REFINER phase, on done the streaming UI clears and final assistant message replaces it with traces, scores [10.0, 9.0, 9.0, 3.0] and the agent-trace-panel still toggles 4 color-coded rows. Re-asking the same question emits cache_check {hit:true} and done immediately (no agent_* / refine_token events), and the cache-hit-badge-N renders in cyan rgb(50,173,230) with 100%. Non-streaming /api/ask still returns 200 with traces+scores. Auth gating: POST /api/ask/stream without cookies returns 401.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ask/stream", "issue": "chat/stream.py defines two parallel event-pump helpers (drain_until_all_done and event_pump); only event_pump is used. Dead code, harmless but should be removed."},
+      {"endpoint": "/api/ask/stream", "issue": "Module-level _caches dict (per-user SemanticCache) grows unbounded, same as chat/routes.py. Demo-acceptable."},
+      {"endpoint": "/api/ask/stream", "issue": "After refine_token exception fallback, the fallback string is emitted as a single refine_token event with the whole fallback as delta — works for the UI (still streams) but loses token-level chunking on errors. Cosmetic."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/backend_stream_test.py",
+    "/app/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/pytest_stream_results.xml"
+  ],
+  "action_items": [
+    "Optional cleanup: remove the unused drain_until_all_done() helper in /app/backend/chat/stream.py.",
+    "Optional hardening: bound _caches in chat/stream.py and _user_caches in chat/routes.py with an LRU/TTL policy for production."
+  ],
+  "critical_code_review_comments": [
+    "chat/stream.py: event ordering is correct — 'thread' first, then 'cache_check', then 4xagent_start interleaved with 4xagent_complete, then 'judge_scores', many 'refine_token', then 'done'. Verified by backend SSE parser.",
+    "chat/stream.py: cache-hit branch correctly skips agent/judge/refine events and emits only cache_check + done, AND persists assistant message with traces=[], scores=[], best_index=-1, elapsed_ms set — matches GET /api/threads/{id} response.",
+    "agents/llm.py:stream_llm uses LlmChat.stream_message and yields only TextDelta.content — clean, but no try/except inside the async generator; failure mid-stream propagates to the outer try/except in stream.py which falls back to best non-error candidate. Good resilience.",
+    "frontend/src/lib/sse.js: uses fetch + ReadableStream + manual SSE parsing (correct for POST+cookies, since EventSource is GET-only). Buffer split on '\\n\\n' is correct.",
+    "frontend/src/pages/ChatPage.js: streaming state cleanly resets on done/error (setPipeline(null), setStreamingAnswer('')) and final message is appended from done payload — UI does not need an extra GET /threads/{id} fetch, which is good for perceived latency.",
+    "Tests still rely on REACT_APP_BACKEND_URL with no fallback now (backend_stream_test.py uses os.environ['...']) — good. backend_test.py still has the legacy default fallback (cosmetic carry-over from iter 2)."
+  ],
+  "updated_files": [
+    "/app/tests/backend_stream_test.py (new)"
+  ],
+  "success_rate": {"backend": "100% (25/25 pytest, incl. 4 new SSE tests)", "frontend": "100% (live-pipeline + streaming-answer + final message + trace panel + cache-hit badge all verified)"},
+  "test_credentials": "admin@decision-engine.dev / admin123 — confirmed working. Pytest also auto-creates test_stream_<uuid>@example.com via /api/auth/register.",
+  "seed_data_creation": "Pytest created one transient registered user per module run and one streamed thread (with first ask -> cache hit re-ask). Browser test created one admin thread with two assistant messages (fresh ask + cache hit). No cleanup performed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "SSE endpoint /api/ask/stream is the primary UI path. Event order verified: thread → cache_check → 4×agent_start (interleaved with) 4×agent_complete → judge_scores → many refine_token → done. Cache hit short-circuits to cache_check{hit:true} + done only. Streaming UI testids: live-pipeline, live-agent-{local_retrieval|general_llm|tavily_web|arxiv_research}, streaming-answer. Existing testids (message-assistant-N, toggle-trace-N, agent-trace-panel, trace-row-N, cache-hit-badge-N) all still work and are populated from the 'done' event payload (no extra GET needed). Non-streaming /api/ask still mounted and returns 200; its JSON shape is {thread_id, message:{content,traces,scores,best_index,elapsed_ms,...}}. Tests live at /app/tests/, not /app/backend/tests/.",
+  "rca of the issue": "No bugs found in this iteration. Streaming pipeline, persistence, cache short-circuit, and UI integration all behave as designed."
+}

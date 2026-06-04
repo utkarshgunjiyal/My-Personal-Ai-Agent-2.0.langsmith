@@ -12,8 +12,10 @@ import {
   Sparkle
 } from '@phosphor-icons/react';
 import { api, formatApiErrorDetail } from '../lib/api';
+import { streamAsk } from '../lib/sse';
 import { useAuth } from '../context/AuthContext';
 import AgentTracePanel from '../components/AgentTracePanel';
+import LivePipeline from '../components/LivePipeline';
 
 export default function ChatPage() {
   const { threadId } = useParams();
@@ -26,6 +28,8 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [openTraceIndex, setOpenTraceIndex] = useState(null);
+  const [pipeline, setPipeline] = useState(null); // live streaming state
+  const [streamingAnswer, setStreamingAnswer] = useState(''); // accumulated tokens
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -44,7 +48,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, busy]);
+  }, [messages.length, busy, streamingAnswer.length, pipeline]);
 
   async function loadThreads() {
     try {
@@ -85,6 +89,13 @@ export default function ChatPage() {
     if (!q || busy) return;
     setBusy(true);
     setError('');
+    setStreamingAnswer('');
+    setPipeline({
+      phase: 'checking cache',
+      agents: { local_retrieval: 'pending', general_llm: 'pending', tavily_web: 'pending', arxiv_research: 'pending' },
+      scores: null,
+      bestIndex: null
+    });
 
     // optimistic user message
     const optimistic = {
@@ -96,16 +107,74 @@ export default function ChatPage() {
     setMessages((m) => [...m, optimistic]);
     setQuestion('');
 
+    let newThreadId = threadId || null;
+
     try {
-      const { data } = await api.post('/ask', { question: q, thread_id: threadId || null });
-      setMessages((m) => [...m, data.message]);
-      if (!threadId) {
-        navigate(`/app/t/${data.thread_id}`, { replace: true });
+      await streamAsk({
+        url: `${process.env.REACT_APP_BACKEND_URL}/api/ask/stream`,
+        body: { question: q, thread_id: threadId || null },
+        onEvent: ({ event, data }) => {
+          if (event === 'thread') {
+            newThreadId = data.thread_id;
+          } else if (event === 'cache_check') {
+            if (data.hit) {
+              setPipeline((p) => ({ ...(p || {}), phase: 'cache hit' }));
+              setStreamingAnswer(data.answer || '');
+            } else {
+              setPipeline((p) => ({ ...(p || {}), phase: 'running agents' }));
+            }
+          } else if (event === 'agent_start') {
+            setPipeline((p) => ({
+              ...(p || {}),
+              agents: { ...(p?.agents || {}), [data.name]: 'running' }
+            }));
+          } else if (event === 'agent_complete') {
+            setPipeline((p) => ({
+              ...(p || {}),
+              agents: { ...(p?.agents || {}), [data.name]: 'done' }
+            }));
+          } else if (event === 'judge_scores') {
+            setPipeline((p) => ({
+              ...(p || {}),
+              phase: 'refining',
+              scores: data.scores,
+              bestIndex: data.best_index
+            }));
+          } else if (event === 'refine_token') {
+            setStreamingAnswer((s) => s + (data.delta || ''));
+          } else if (event === 'done') {
+            // build final assistant message from `done` payload
+            const finalMsg = {
+              message_id: data.message_id,
+              role: 'assistant',
+              content: data.final_answer,
+              cache_hit: !!data.cache_hit,
+              cache_similarity: data.cache_similarity || 0,
+              cached_question: data.cached_question || null,
+              traces: data.traces || [],
+              scores: data.scores || [],
+              best_index: typeof data.best_index === 'number' ? data.best_index : -1,
+              elapsed_ms: data.elapsed_ms || 0,
+              created_at: new Date().toISOString()
+            };
+            setMessages((m) => [...m, finalMsg]);
+            setPipeline(null);
+            setStreamingAnswer('');
+          } else if (event === 'error') {
+            throw new Error(data.message || 'Stream error');
+          }
+        }
+      });
+
+      if (!threadId && newThreadId) {
+        navigate(`/app/t/${newThreadId}`, { replace: true });
       }
       loadThreads();
     } catch (err) {
-      setError(formatApiErrorDetail(err.response?.data?.detail) || err.message);
+      setError(formatApiErrorDetail(err.message) || 'Stream error');
       setMessages((m) => m.filter((x) => x.message_id !== optimistic.message_id));
+      setPipeline(null);
+      setStreamingAnswer('');
     } finally {
       setBusy(false);
     }
@@ -215,7 +284,23 @@ export default function ChatPage() {
             {messages.map((m, idx) => (
               <Message key={m.message_id || idx} msg={m} index={idx} openTraceIndex={openTraceIndex} setOpenTraceIndex={setOpenTraceIndex} />
             ))}
-            {busy && <ThinkingIndicator />}
+            {busy && (
+              <div className="space-y-3 animate-fade-in-up">
+                <LivePipeline pipeline={pipeline} />
+                {streamingAnswer && (
+                  <div data-testid="streaming-answer">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Lightning size={14} weight="fill" className="text-white" />
+                      <span className="font-mono text-[10px] tracking-[0.25em] text-white/50">REFINER · STREAMING</span>
+                    </div>
+                    <div className="text-sm leading-relaxed whitespace-pre-wrap text-white/90">
+                      {streamingAnswer}
+                      <span className="inline-block w-1.5 h-3.5 bg-white/80 ml-0.5 align-middle animate-pulse" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <div ref={bottomRef} />
           </div>
         </div>
@@ -294,11 +379,11 @@ function EmptyState({ onPick }) {
   );
 }
 
-function ThinkingIndicator() {
+function ThinkingIndicator() {  // eslint-disable-line no-unused-vars
   return (
-    <div className="font-mono text-[11px] tracking-[0.25em] text-white/50 flex items-center gap-2 animate-fade-in-up" data-testid="thinking-indicator">
+    <div className="font-mono text-[11px] tracking-[0.25em] text-white/50 flex items-center gap-2 animate-fade-in-up">
       <span className="w-1.5 h-1.5 bg-white animate-pulse" aria-hidden />
-      <span>AGENTS WORKING · LOCAL · GENERAL · WEB · ARXIV · JUDGE · REFINER</span>
+      <span>AGENTS WORKING</span>
     </div>
   );
 }

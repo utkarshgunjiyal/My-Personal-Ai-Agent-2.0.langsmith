@@ -17,6 +17,10 @@ choose the wrong interpretation of an ambiguous question. **Decision Engine**
 runs *four* agents in parallel, has a *judge* score each candidate answer, and
 finally has a *refiner* synthesize a single, evidence-grounded response.
 
+Every step is **streamed live** to the UI over Server-Sent Events — you watch
+each agent light up as it finishes, scores arrive in real time, and the final
+answer streams in token-by-token. No 30-second spinners.
+
 Everything — threads, messages, agent traces, scores, semantic cache — is
 persisted in MongoDB. Reload the page, restart the server, restart the cluster:
 your conversations resume exactly where you left off.
@@ -184,6 +188,7 @@ Interactive Swagger docs at **`/docs`** when the backend is running.
 | GET    | `/api/threads/{id}`           | Get thread + messages                         |
 | DELETE | `/api/threads/{id}`           | Delete thread + messages                      |
 | POST   | `/api/ask`                    | Ask a question (auto-creates thread if needed)|
+| POST   | `/api/ask/stream`             | **Streaming** ask via Server-Sent Events       |
 | GET    | `/api/stats/overview`         | Aggregated metrics (user, or all if admin)    |
 | GET    | `/api/stats/recent`           | Last 20 runs                                  |
 
@@ -194,6 +199,9 @@ Use these on your CV — every claim is backed by code in this repo.
 - Designed and built a **production-grade multi-agent RAG system** (LangGraph,
   FastAPI, React, MongoDB) with 4 parallel agents, LLM-as-a-judge evaluation,
   answer refinement and a persistent semantic cache.
+- **Streamed end-to-end pipeline over Server-Sent Events** — clients watch each
+  agent's state (`pending → running → done`), receive judge scores in real time,
+  and consume refined tokens as they're generated.
 - Implemented **dual authentication** — JWT (email+password) and Emergent
   Google OAuth — sharing a unified user model; httpOnly cookies, bcrypt,
   brute-force lockout, and password reset tokens with TTL.

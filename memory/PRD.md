@@ -26,6 +26,7 @@ React (Tailwind, Phosphor, Recharts) → FastAPI `/api` → LangGraph workflow �
 ## What's been implemented (2026-06-04)
 - [x] Backend: FastAPI app with `/api` prefix, CORS, JWT auth, Google OAuth, brute force lockout, password reset, indexes, admin seed
 - [x] LangGraph workflow with concurrent agent fan-out, judge & refiner
+- [x] **Streaming `/api/ask/stream` endpoint (SSE)** — emits `cache_check`, `agent_start/complete`, `judge_scores`, `refine_token`, `done` events; UI displays a live agent-status panel and streams refined tokens in real time
 - [x] Hybrid retriever (BM25 + TF-IDF cosine, min-max fused)
 - [x] Persistent semantic cache (per-user, hydrates from MongoDB)
 - [x] Chat routes: list/create/get/delete threads, /ask
@@ -39,7 +40,7 @@ React (Tailwind, Phosphor, Recharts) → FastAPI `/api` → LangGraph workflow �
 - [x] Smoke tests (auth, threads/stats require auth) + unit tests for retrieval
 
 ## Backlog (P0/P1/P2)
-- P1: SSE/streaming responses (currently single JSON response)
+- [x] **DONE 2026-06-04**: SSE/streaming responses for the `/ask` flow with live agent state + token streaming
 - P1: Per-user file/URL ingestion to grow the local KB
 - P2: Token & cost tracking per user
 - P2: Rate-limiting middleware (slowapi)
