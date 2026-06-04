@@ -16,3 +16,10 @@ coverage/
 # Secrets / test creds — never commit these to a public repo
 /app/memory/test_credentials.md
 memory/test_credentials.md
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
