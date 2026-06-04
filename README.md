@@ -4,9 +4,29 @@
 > Four LLM agents debate, a judge scores, a refiner synthesizes — every answer
 > is grounded, cached and persisted across server restarts.
 
+[![Live Demo](https://img.shields.io/badge/▶_Live_Demo-career--showcase--511.emergent.host-FFFFFF?style=for-the-badge&labelColor=0A0A0A)](https://career-showcase-511.emergent.host)
 [![CI](https://img.shields.io/badge/CI-passing-34C759?style=flat-square)](.github/workflows/ci.yml)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20·%20React%20·%20MongoDB%20·%20LangGraph-007AFF?style=flat-square)](.)
 [![License](https://img.shields.io/badge/license-MIT-FFCC00?style=flat-square)](#license)
+
+---
+
+## 🎬 Try it in 30 seconds
+
+**Live demo →** [https://career-showcase-511.emergent.host](https://career-showcase-511.emergent.host)
+
+```
+Demo account
+  email:    admin@decision-engine.dev
+  password: admin123
+```
+
+Or click **Continue with Google** for a one-click sign-in. Then ask anything —
+watch the four agents light up in parallel, see live judge scores arrive, and
+the refined answer stream in token-by-token.
+
+> 💡 **Recruiter-friendly:** No setup, no clone. Just click, sign in, ask a
+> question, and see a production-grade multi-agent system in action.
 
 ---
 
