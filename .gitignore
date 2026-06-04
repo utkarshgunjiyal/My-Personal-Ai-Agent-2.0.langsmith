@@ -1,5 +1,3 @@
-.env
-.env.local
 .venv/
 __pycache__/
 *.pyc
@@ -14,9 +12,7 @@ coverage/
 .idea/
 .vscode/
 *.log
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
+
+# Secrets / test creds — never commit these to a public repo
+/app/memory/test_credentials.md
+memory/test_credentials.md
