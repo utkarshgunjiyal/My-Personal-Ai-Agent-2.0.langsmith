@@ -78,7 +78,20 @@ async def check_cache(state: EngineState) -> EngineState:
 
 async def _run_agent(name: str, color: str, system: str, prompt: str, context: str) -> AgentTrace:
     started = time.perf_counter()
-    answer = await call_llm(system, prompt)
+    try:
+        answer = await call_llm(system, prompt)
+    except Exception as e:
+        # Resilience: a single agent failure should NOT crash the pipeline.
+        msg = str(e)
+        if "Budget" in msg or "budget" in msg:
+            answer = (
+                f"[{name} unavailable: LLM provider budget exceeded. "
+                "Please refresh your Emergent LLM key budget — Profile → Universal Key → Add Balance.]"
+            )
+        elif "rate" in msg.lower():
+            answer = f"[{name} rate-limited by LLM provider — please retry in a moment.]"
+        else:
+            answer = f"[{name} error: {msg[:200]}]"
     return AgentTrace(
         name=name,
         color=color,
@@ -134,8 +147,13 @@ async def run_agents(state: EngineState) -> EngineState:
             arxiv_ctx,
         ),
     ]
-    state["traces"] = await asyncio.gather(*tasks)
+    state["traces"] = await asyncio.gather(*tasks, return_exceptions=False)
     return state
+
+
+def _is_error_trace(t: AgentTrace) -> bool:
+    a = (t.get("answer") or "").strip()
+    return a.startswith("[") and ("error" in a.lower() or "unavailable" in a.lower() or "rate-limited" in a.lower())
 
 
 async def evaluate(state: EngineState) -> EngineState:
@@ -151,10 +169,16 @@ async def evaluate(state: EngineState) -> EngineState:
     )
 
     async def score_one(trace: AgentTrace) -> float:
+        if _is_error_trace(trace):
+            return 0.0
         prompt = f"Question:\n{question}\n\nAnswer:\n{trace['answer']}"
-        raw = await call_llm(system, prompt)
         try:
-            # Extract first number
+            raw = await call_llm(system, prompt)
+        except Exception:
+            # Heuristic fallback: length-based score in [3, 7]
+            n = len(trace["answer"])
+            return max(3.0, min(7.0, 3.0 + (n / 600.0)))
+        try:
             import re
             m = re.search(r"-?\d+(?:\.\d+)?", raw)
             return max(0.0, min(10.0, float(m.group()))) if m else 0.0
@@ -172,10 +196,16 @@ async def evaluate(state: EngineState) -> EngineState:
 
 
 async def refine(state: EngineState) -> EngineState:
-    question = state["question"]
+    state["final_answer"] = await _safe_refine(
+        state["question"], state["traces"], state["best_answer"]
+    )
+    return state
+
+
+async def _safe_refine(question: str, traces: list[AgentTrace], best_answer: str) -> str:
     candidates = "\n\n".join(
         f"=== Agent {i + 1} ({t['name']}, score={t['score']}) ===\n{t['answer']}"
-        for i, t in enumerate(state["traces"])
+        for i, t in enumerate(traces)
     )
     system = (
         "You are the final answer refiner for a multi-agent AI system. "
@@ -185,11 +215,18 @@ async def refine(state: EngineState) -> EngineState:
     )
     prompt = (
         f"Question:\n{question}\n\nCandidate Answers:\n{candidates}\n\n"
-        f"Best (selected by judge):\n{state['best_answer']}\n\n"
+        f"Best (selected by judge):\n{best_answer}\n\n"
         "Produce the final answer."
     )
-    state["final_answer"] = await call_llm(system, prompt)
-    return state
+    try:
+        return await call_llm(system, prompt)
+    except Exception as e:
+        # Fall back to the best non-error candidate
+        non_err = [t for t in traces if not _is_error_trace(t)]
+        if non_err:
+            non_err.sort(key=lambda t: t.get("score", 0), reverse=True)
+            return non_err[0]["answer"]
+        return f"[Engine temporarily unavailable: {str(e)[:200]}]"
 
 
 async def write_cache(state: EngineState) -> EngineState:
