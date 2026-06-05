@@ -185,7 +185,11 @@ async def extract(filename: str, mime: str, data: bytes) -> dict:
         raise ValueError(f"Unhandled kind: {kind}")
 
     text = (text or "").strip()
-    chunks = chunk_text(text) if text else []
+    # Don't index error/unavailable strings emitted by failed extractors
+    looks_error = bool(text) and text.startswith("[") and (
+        "error" in text.lower() or "unavailable" in text.lower()
+    )
+    chunks = chunk_text(text) if text and not looks_error else []
     return {
         "kind": kind,
         "text": text,

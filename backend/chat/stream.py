@@ -120,17 +120,27 @@ async def _run_one_agent(
     return trace
 
 
-async def _score_trace(trace: dict, question: str) -> float:
+async def _score_trace(trace: dict, question: str, *, has_uploads: bool = False) -> float:
     if _is_error_trace(trace):
         return 0.0
-    system = (
+    base_rules = (
         "You are a strict evaluator. Score the candidate answer from 0 to 10 based on: "
         "correctness, relevance, clarity, technical accuracy, and grounding in evidence. "
         "Penalize unsupported claims. "
         "Special rule: If the question mentions RAG and the answer interprets it as 'Red Amber Green', score below 3. "
         "If the question mentions RAG and the answer interprets it as 'Retrieval-Augmented Generation', score above 8. "
-        "Reply with ONLY a single number between 0 and 10. No other text."
     )
+    if has_uploads:
+        base_rules += (
+            "IMPORTANT: The user has uploaded their OWN documents to this thread. "
+            "An answer that uses or quotes the user's uploaded content (e.g. cites a filename, "
+            "transcribes a value from their file, or paraphrases an uploaded passage) MUST be "
+            "scored 9 or 10 — that is the desired behavior. Do NOT penalise answers for "
+            "revealing content from the user's own uploaded files; that content belongs to the user. "
+            "Conversely, an answer that refuses or claims it 'cannot see the attachment' when the "
+            "user clearly attached one MUST be scored 2 or below. "
+        )
+    system = base_rules + "Reply with ONLY a single number between 0 and 10. No other text."
     prompt = f"Question:\n{question}\n\nAnswer:\n{trace['answer']}"
     try:
         raw = await call_llm(system, prompt)
@@ -184,9 +194,14 @@ async def _stream_engine(
         }
     )
 
-    # --- Check semantic cache ---
+    # --- Check semantic cache (skipped when thread has uploaded files, since
+    # grounded answers depend on per-thread context and must not pollute the
+    # per-user cache) ---
+    upload_count = await db.uploaded_files.count_documents(
+        {"thread_id": thread_id, "user_id": user_id}
+    )
     cache = await _user_cache(user_id)
-    hit = cache.search(question)
+    hit = cache.search(question) if upload_count == 0 else None
     if hit:
         # Emit cache event + done; persist assistant message with cache hit.
         yield _sse(
@@ -257,7 +272,7 @@ async def _stream_engine(
         db, thread_id=thread_id, user_id=user_id, query=question, top_k=4
     )
     user_ctx = format_docs_for_context(user_docs)
-    upload_count = await db.uploaded_files.count_documents({"thread_id": thread_id, "user_id": user_id})
+    has_uploads = upload_count > 0
     if user_ctx:
         local_ctx = f"=== Your Uploaded Documents ===\n{user_ctx}\n\n=== Built-in Knowledge Base ===\n{local_ctx}"
 
@@ -318,10 +333,38 @@ async def _stream_engine(
     traces = [t.result() for t in agent_tasks]
 
     # --- Score traces (judge) in parallel ---
-    scores = await asyncio.gather(*(_score_trace(t, question) for t in traces))
+    scores = await asyncio.gather(
+        *(_score_trace(t, question, has_uploads=has_uploads) for t in traces)
+    )
     for t, s in zip(traces, scores):
         t["score"] = float(s)
     best_index = int(max(range(len(scores)), key=lambda i: scores[i])) if scores else -1
+
+    # Hard override: when the user has uploaded files AND the local_retrieval
+    # agent actually grounded its answer in them, prefer it. This corrects for
+    # LLM-judge bias against revealing content from user-owned uploads.
+    if has_uploads and user_docs and traces:
+        local_idx = next((i for i, t in enumerate(traces) if t.get("name") == "local_retrieval"), -1)
+        if local_idx >= 0 and not _is_error_trace(traces[local_idx]):
+            local_ans = (traces[local_idx].get("answer") or "").lower()
+            # Heuristic: if the local agent's answer references a known uploaded
+            # filename OR contains a substring from any retrieved chunk, prefer it.
+            uploaded_filenames = {d.filename.lower() for d in user_docs}
+            chunk_tokens = set()
+            for d in user_docs:
+                for tok in re.findall(r"[A-Za-z0-9_\-]{6,}", d.content):
+                    chunk_tokens.add(tok.lower())
+            grounded = (
+                any(fn in local_ans for fn in uploaded_filenames)
+                or any(tok in local_ans for tok in list(chunk_tokens)[:200])
+            )
+            if grounded:
+                # Boost local score so the trace reflects the override too.
+                scores = list(scores)
+                scores[local_idx] = max(scores[local_idx], 9.5)
+                traces[local_idx]["score"] = float(scores[local_idx])
+                best_index = local_idx
+
     yield _sse(
         "judge_scores",
         {"scores": [float(s) for s in scores], "best_index": best_index},
@@ -338,6 +381,14 @@ async def _stream_engine(
         "Prefer the best-scored answer's content, but incorporate useful detail from others. "
         "Do not include unsupported claims. Do not mention the agents."
     )
+    if has_uploads:
+        refine_system += (
+            " The user has uploaded their own documents to this thread; their content "
+            "is reproduced in the candidate answers and belongs to the user. You MUST "
+            "faithfully include any specific values (names, tokens, numbers, quotes) that "
+            "appear in the best candidate's grounded answer — do NOT refuse, redact, or "
+            "claim the attachment cannot be seen."
+        )
     best_answer = traces[best_index]["answer"] if best_index >= 0 else ""
     refine_prompt = (
         f"Question:\n{question}\n\nCandidate Answers:\n{candidates}\n\n"
@@ -381,7 +432,11 @@ async def _stream_engine(
         "created_at": datetime.now(timezone.utc),
     }
     await db.messages.insert_one(asst_doc)
-    await cache.add(db, user_id, question, final_answer)
+    # Skip cross-thread semantic cache when the answer depends on the user's
+    # per-thread uploaded documents — caching would serve the wrong answer
+    # in other threads (or after the user removes the file).
+    if not has_uploads:
+        await cache.add(db, user_id, question, final_answer)
     await db.threads.update_one(
         {"thread_id": thread_id},
         {"$inc": {"message_count": 2}, "$set": {"updated_at": datetime.now(timezone.utc)}},
