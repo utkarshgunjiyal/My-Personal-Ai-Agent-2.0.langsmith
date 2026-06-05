@@ -95,6 +95,8 @@ async def delete_thread(thread_id: str, user=Depends(get_current_user)):
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Thread not found")
     await db.messages.delete_many({"thread_id": thread_id})
+    await db.uploaded_files.delete_many({"thread_id": thread_id, "user_id": user["user_id"]})
+    await db.thread_documents.delete_many({"thread_id": thread_id, "user_id": user["user_id"]})
     return {"ok": True}
 
 

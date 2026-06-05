@@ -9,7 +9,13 @@ import {
   Trash,
   CaretRight,
   CaretDown,
-  Sparkle
+  Sparkle,
+  Paperclip,
+  FilePdf,
+  FileText,
+  Image as ImageIcon,
+  X,
+  CircleNotch
 } from '@phosphor-icons/react';
 import { api, formatApiErrorDetail } from '../lib/api';
 import { streamAsk } from '../lib/sse';
@@ -30,6 +36,10 @@ export default function ChatPage() {
   const [openTraceIndex, setOpenTraceIndex] = useState(null);
   const [pipeline, setPipeline] = useState(null); // live streaming state
   const [streamingAnswer, setStreamingAnswer] = useState(''); // accumulated tokens
+  const [uploads, setUploads] = useState([]); // attached files for current thread
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -38,10 +48,13 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (threadId) loadThread(threadId);
-    else {
+    if (threadId) {
+      loadThread(threadId);
+      loadUploads(threadId);
+    } else {
       setMessages([]);
       setActiveThread(null);
+      setUploads([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
@@ -67,6 +80,55 @@ export default function ChatPage() {
       setOpenTraceIndex(null);
     } catch (e) {
       navigate('/app', { replace: true });
+    }
+  }
+
+  async function loadUploads(id) {
+    try {
+      const { data } = await api.get(`/uploads?thread_id=${id}`);
+      setUploads(data.files || []);
+    } catch (e) {
+      setUploads([]);
+    }
+  }
+
+  async function handleFilePick(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // reset so same file can be picked again
+    if (files.length === 0) return;
+    setUploadError('');
+    setUploading(true);
+    let currentThreadId = threadId || null;
+    try {
+      for (const f of files) {
+        const form = new FormData();
+        form.append('file', f);
+        if (currentThreadId) form.append('thread_id', currentThreadId);
+        const { data } = await api.post('/uploads', form, {
+          headers: { 'Content-Type': undefined }
+        });
+        // If we just created a new thread on first upload, route into it
+        if (!currentThreadId) {
+          currentThreadId = data.thread_id;
+          navigate(`/app/t/${data.thread_id}`, { replace: true });
+        }
+        setUploads((u) => [...u, data]);
+      }
+      loadThreads();
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setUploadError(formatApiErrorDetail(detail) || err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function removeUpload(fileId) {
+    try {
+      await api.delete(`/uploads/${fileId}`);
+      setUploads((u) => u.filter((f) => f.file_id !== fileId));
+    } catch (err) {
+      // noop
     }
   }
 
@@ -123,6 +185,11 @@ export default function ChatPage() {
             } else {
               setPipeline((p) => ({ ...(p || {}), phase: 'running agents' }));
             }
+          } else if (event === 'uploads_used') {
+            setPipeline((p) => ({
+              ...(p || {}),
+              phase: `grounding · ${data.matched_chunks || 0} chunk${(data.matched_chunks || 0) === 1 ? '' : 's'} from ${data.file_count} file${(data.file_count || 0) === 1 ? '' : 's'}`
+            }));
           } else if (event === 'agent_start') {
             setPipeline((p) => ({
               ...(p || {}),
@@ -313,7 +380,35 @@ export default function ChatPage() {
                 {error}
               </div>
             )}
+            {uploadError && (
+              <div className="mb-2 border border-agent-arxiv/40 bg-agent-arxiv/10 text-agent-arxiv px-3 py-2 text-xs font-mono" data-testid="upload-error">
+                {uploadError}
+              </div>
+            )}
+            <AttachmentBar uploads={uploads} onRemove={removeUpload} uploading={uploading} />
             <div className="surface flex items-end gap-2 p-3">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.txt,.md,.csv,.json,.xml,.html,.py,.js,.ts,.png,.jpg,.jpeg,.webp,application/pdf,text/*,image/png,image/jpeg,image/webp"
+                onChange={handleFilePick}
+                className="hidden"
+                data-testid="file-input"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="text-white/60 hover:text-white p-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                data-testid="attach-file-btn"
+                aria-label="Attach file"
+                title="Attach PDF / text / image"
+              >
+                {uploading
+                  ? <CircleNotch size={18} weight="bold" className="animate-spin" />
+                  : <Paperclip size={18} weight="bold" />}
+              </button>
               <textarea
                 rows={1}
                 value={question}
@@ -324,7 +419,7 @@ export default function ChatPage() {
                     submit(e);
                   }
                 }}
-                placeholder="Ask anything — the engine will route, evaluate and refine…"
+                placeholder={uploads.length > 0 ? "Ask anything about your files — or anything else…" : "Ask anything — the engine will route, evaluate and refine…"}
                 className="flex-1 bg-transparent text-sm leading-relaxed resize-none placeholder:text-white/30 focus:outline-none min-h-[24px] max-h-[160px]"
                 data-testid="ask-input"
               />
@@ -339,7 +434,7 @@ export default function ChatPage() {
               </button>
             </div>
             <div className="mt-2 text-[10px] font-mono text-white/30">
-              ENTER to send · SHIFT+ENTER for newline
+              ENTER to send · SHIFT+ENTER for newline · PDF / TXT / PNG · JPG up to 15MB
             </div>
           </div>
         </form>
@@ -351,16 +446,19 @@ export default function ChatPage() {
 function EmptyState({ onPick }) {
   const suggestions = [
     'What is Retrieval-Augmented Generation (RAG)?',
-    'Explain LangGraph state machines in one paragraph.',
+    'Summarize the attached document for me.',
     'Compare BM25 with dense vector retrieval.',
-    'How does an LLM-as-judge evaluator work?'
+    'What do you see in the uploaded image?'
   ];
   return (
     <div className="surface p-8 animate-fade-in-up" data-testid="empty-state">
       <span className="label-eyebrow">/ start here</span>
       <h2 className="mt-3 text-3xl font-bold tracking-tight">Ask the engine.</h2>
       <p className="mt-3 text-sm text-white/60 max-w-xl">
-        Four agents will work in parallel — Local retrieval, General LLM, Web (Tavily) and arXiv research. A judge will score them, then a refiner will synthesize a single answer.
+        Four agents work in parallel — Local retrieval (KB + your uploads), General LLM, Web (Tavily) and arXiv research. A judge scores them, then a refiner synthesizes the final answer.
+      </p>
+      <p className="mt-2 text-sm text-white/50 max-w-xl">
+        Attach <span className="text-white/80 font-mono text-[11px]">PDFs · text · images</span> via the paperclip — they&apos;ll be parsed, chunked, and grounded into every answer in this thread.
       </p>
       <div className="mt-6 grid sm:grid-cols-2 gap-px bg-white/10">
         {suggestions.map((s) => (
@@ -384,6 +482,68 @@ function ThinkingIndicator() {  // eslint-disable-line no-unused-vars
     <div className="font-mono text-[11px] tracking-[0.25em] text-white/50 flex items-center gap-2 animate-fade-in-up">
       <span className="w-1.5 h-1.5 bg-white animate-pulse" aria-hidden />
       <span>AGENTS WORKING</span>
+    </div>
+  );
+}
+
+function fmtSize(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FileIcon({ kind, size = 14 }) {
+  if (kind === 'pdf') return <FilePdf size={size} weight="duotone" className="text-agent-arxiv" />;
+  if (kind === 'image') return <ImageIcon size={size} weight="duotone" className="text-agent-web" />;
+  return <FileText size={size} weight="duotone" className="text-agent-local" />;
+}
+
+function AttachmentBar({ uploads, onRemove, uploading }) {
+  if (!uploads || uploads.length === 0) {
+    if (!uploading) return null;
+    return (
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-mono text-white/50" data-testid="upload-progress">
+        <CircleNotch size={12} weight="bold" className="animate-spin" />
+        Processing file…
+      </div>
+    );
+  }
+  return (
+    <div className="mb-2 flex flex-wrap gap-2" data-testid="attachment-bar">
+      {uploads.map((f) => (
+        <div
+          key={f.file_id}
+          className="group flex items-center gap-2 border border-white/15 bg-white/[0.04] px-2.5 py-1.5 text-[11px]"
+          data-testid={`attachment-chip-${f.file_id}`}
+        >
+          <FileIcon kind={f.kind} />
+          <span className="font-mono text-white/85 max-w-[180px] truncate" title={f.filename}>{f.filename}</span>
+          <span className="font-mono text-white/35 text-[10px]">{fmtSize(f.size)}</span>
+          {f.kind === 'image' && (
+            <span className="font-mono text-[9px] tracking-wider uppercase text-agent-web/80">vision</span>
+          )}
+          {typeof f.chunk_count === 'number' && f.chunk_count > 0 && (
+            <span className="font-mono text-[9px] tracking-wider uppercase text-white/40">
+              {f.chunk_count} chunk{f.chunk_count === 1 ? '' : 's'}
+            </span>
+          )}
+          <button
+            onClick={() => onRemove(f.file_id)}
+            className="text-white/40 hover:text-white transition-colors ml-1"
+            data-testid={`attachment-remove-${f.file_id}`}
+            aria-label={`Remove ${f.filename}`}
+          >
+            <X size={11} weight="bold" />
+          </button>
+        </div>
+      ))}
+      {uploading && (
+        <div className="flex items-center gap-2 text-[11px] font-mono text-white/50 px-2 py-1.5" data-testid="upload-progress">
+          <CircleNotch size={12} weight="bold" className="animate-spin" />
+          Processing…
+        </div>
+      )}
     </div>
   );
 }

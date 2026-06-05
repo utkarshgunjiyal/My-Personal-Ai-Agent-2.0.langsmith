@@ -13,7 +13,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL",
-    "https://80d11e48-f443-4f68-b438-ec5ad0a739b8.preview.emergentagent.com",
+    "https://multi-source-rag.preview.emergentagent.com",
 ).rstrip("/")
 
 ADMIN_EMAIL = "admin@decision-engine.dev"

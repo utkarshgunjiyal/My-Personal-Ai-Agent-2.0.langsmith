@@ -105,19 +105,48 @@ async def _run_agent(name: str, color: str, system: str, prompt: str, context: s
 async def run_agents(state: EngineState) -> EngineState:
     """Fan-out all 4 agents concurrently for speed."""
     question = state["question"]
+    db = state.get("db")
+    thread_id = state.get("thread_id")
+    user_id = state.get("user_id")
 
     # Build contexts
     docs = retriever.search(question)
     local_ctx = "\n".join(f"- {d.content}" for d in docs)
+
+    # Augment with user-uploaded thread documents (if any).
+    user_docs = []
+    if db is not None and thread_id and user_id:
+        from uploads.retriever import retrieve_thread_docs, format_docs_for_context
+        user_docs = await retrieve_thread_docs(
+            db, thread_id=thread_id, user_id=user_id, query=question, top_k=4
+        )
+        user_ctx = format_docs_for_context(user_docs)
+        if user_ctx:
+            local_ctx = (
+                f"=== Your Uploaded Documents ===\n{user_ctx}\n\n"
+                f"=== Built-in Knowledge Base ===\n{local_ctx}"
+            )
+
     web_ctx = await asyncio.to_thread(tavily_search_context, question, 3)
     arxiv_ctx = await asyncio.to_thread(arxiv_search_context, question, 3)
+
+    local_sys = (
+        "You are a precise technical assistant. Answer using ONLY the local retrieved context. "
+        "If the context is insufficient, say so explicitly. Be concise (4-8 sentences)."
+    )
+    if user_docs:
+        local_sys = (
+            "You are a precise technical assistant. Answer using the provided context, "
+            "PRIORITIZING the user's uploaded documents over the built-in knowledge base. "
+            "Quote / cite filenames inline when you use them. "
+            "If neither source is sufficient, say so explicitly. Be concise (4-8 sentences)."
+        )
 
     tasks = [
         _run_agent(
             "local_retrieval",
             "#007AFF",
-            "You are a precise technical assistant. Answer using ONLY the local retrieved context. "
-            "If the context is insufficient, say so explicitly. Be concise (4-8 sentences).",
+            local_sys,
             f"Local Context:\n{local_ctx}\n\nQuestion: {question}",
             local_ctx,
         ),

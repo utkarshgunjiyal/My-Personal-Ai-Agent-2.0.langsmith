@@ -14,6 +14,7 @@ from chat.routes import router as chat_router
 from chat.stream import router as chat_stream_router
 from db import get_db, init_indexes
 from stats.routes import router as stats_router
+from uploads.routes import router as uploads_router
 
 # ----- Logging -----
 logging.basicConfig(
@@ -51,6 +52,7 @@ app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(chat_stream_router)
 app.include_router(stats_router)
+app.include_router(uploads_router)
 
 
 # ----- Lifecycle -----

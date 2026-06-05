@@ -28,6 +28,7 @@ from agents.llm import call_llm, stream_llm
 from agents.retrieval import HybridRetriever
 from auth.deps import get_current_user
 from db import get_db
+from uploads.retriever import retrieve_thread_docs, format_docs_for_context
 
 router = APIRouter(prefix="/api", tags=["chat-stream"])
 
@@ -250,8 +251,27 @@ async def _stream_engine(
     # --- Build agent contexts ---
     docs = _retriever.search(question)
     local_ctx = "\n".join(f"- {d.content}" for d in docs)
+
+    # Per-thread uploaded-document retrieval (user's own PDFs / images / text)
+    user_docs = await retrieve_thread_docs(
+        db, thread_id=thread_id, user_id=user_id, query=question, top_k=4
+    )
+    user_ctx = format_docs_for_context(user_docs)
+    upload_count = await db.uploaded_files.count_documents({"thread_id": thread_id, "user_id": user_id})
+    if user_ctx:
+        local_ctx = f"=== Your Uploaded Documents ===\n{user_ctx}\n\n=== Built-in Knowledge Base ===\n{local_ctx}"
+
     web_ctx = await asyncio.to_thread(tavily_search_context, question, 3)
     arxiv_ctx = await asyncio.to_thread(arxiv_search_context, question, 3)
+
+    local_system = AGENT_SYSTEMS["local_retrieval"]
+    if user_ctx:
+        local_system = (
+            "You are a precise technical assistant. Answer using the provided context, "
+            "PRIORITIZING the user's uploaded documents over the built-in knowledge base. "
+            "Quote / cite filenames inline when you use them (e.g., '(per resume.pdf)'). "
+            "If neither source is sufficient, say so explicitly. Be concise (4-8 sentences)."
+        )
 
     contexts = {
         "local_retrieval": (f"Local Context:\n{local_ctx}\n\nQuestion: {question}", local_ctx),
@@ -260,14 +280,21 @@ async def _stream_engine(
         "arxiv_research": (f"arXiv Context:\n{arxiv_ctx}\n\nQuestion: {question}", arxiv_ctx),
     }
 
+    if upload_count > 0:
+        yield _sse(
+            "uploads_used",
+            {"file_count": int(upload_count), "matched_chunks": len(user_docs)},
+        ).encode()
+
     # --- Run agents concurrently, push events as each completes ---
     queue: asyncio.Queue = asyncio.Queue()
     agent_tasks: list[asyncio.Task] = []
     for idx, (name, color) in enumerate(AGENT_META):
         prompt, ctx = contexts[name]
+        sys_prompt = local_system if name == "local_retrieval" else AGENT_SYSTEMS[name]
         agent_tasks.append(
             asyncio.create_task(
-                _run_one_agent(idx, name, color, AGENT_SYSTEMS[name], prompt, ctx, queue)
+                _run_one_agent(idx, name, color, sys_prompt, prompt, ctx, queue)
             )
         )
     pending = set(agent_tasks)
