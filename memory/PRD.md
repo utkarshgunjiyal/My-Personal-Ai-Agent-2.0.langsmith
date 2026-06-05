@@ -40,10 +40,12 @@ React (Tailwind, Phosphor, Recharts) → FastAPI `/api` → LangGraph workflow �
 - [x] Dockerfile (backend), Dockerfile (frontend nginx), docker-compose, CI workflow
 - [x] Comprehensive README with architecture diagram + resume bullets
 - [x] Smoke tests (auth, threads/stats require auth) + unit tests for retrieval
+- [x] **DONE 2026-06-05**: File upload + multimodal RAG (PDF / TXT / images) — `/api/uploads` (POST/GET/DELETE), pypdf text extraction, OpenAI gpt-4o vision OCR/description for images, TF-IDF retrieval over per-thread chunks, paperclip + attachment-chips UI in chat composer, `uploads_used` SSE event, judge / refiner / cache made upload-aware
 
 ## Backlog (P0/P1/P2)
 - [x] **DONE 2026-06-04**: SSE/streaming responses for the `/ask` flow with live agent state + token streaming
-- P1: Per-user file/URL ingestion to grow the local KB
+- [x] **DONE 2026-06-05**: User file uploads (PDFs, text files, images) grounded into RAG retrieval per thread — the ChatGPT-style attachment flow
+- P1: Drag-and-drop file upload + paste-image-from-clipboard
 - P2: Token & cost tracking per user
 - P2: Rate-limiting middleware (slowapi)
 - P2: Email delivery for password reset (currently logged to console)
