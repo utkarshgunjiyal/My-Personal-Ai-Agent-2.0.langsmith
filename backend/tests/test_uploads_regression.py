@@ -199,7 +199,7 @@ class TestCrossThreadCacheIsolation:
         # Run again on the same thread to confirm cache works there
         threadA = _get_event(evA, "thread")["thread_id"]
         evA2 = _stream_ask(session, question, threadA)
-        ccA2 = _get_event(evA2, "cache_check")
+        _get_event(evA2, "cache_check")
         # cache may or may not hit depending on semantic threshold; we don't
         # strictly require it. We only require that thread B is NOT served the
         # cached answer.

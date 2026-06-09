@@ -1,15 +1,27 @@
-"""Extract searchable text from uploaded files (PDF, plain text, images)."""
+"""Extract searchable text from uploaded files (PDF, plain text, images).
+
+PDF strategy:
+    1. Try text extraction via pypdf per page.
+    2. If a page yields < OCR_THRESHOLD chars of text, render that page with
+       pdf2image and OCR it via Tesseract (`pytesseract`).
+    3. Emit page-aware chunks: `{content, page, source}`.
+
+Image strategy:
+    1. Run Tesseract OCR for any embedded text.
+    2. Run vision LLM (gpt-4o) for visual description.
+    3. Combine into a single dense document.
+"""
 import asyncio
 import base64
 import io
 import logging
+import os
 import re
+import uuid
 from typing import Tuple
 
 from PIL import Image
 from emergentintegrations.llm.chat import ImageContent, LlmChat, UserMessage
-import os
-import uuid
 
 log = logging.getLogger("uploads.extractors")
 
@@ -23,13 +35,12 @@ IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 
 ALLOWED_MIME = TEXT_MIME_TYPES | PDF_MIME_TYPES | IMAGE_MIME_TYPES
 
-# Max chunk size (chars) and overlap for retrieval
 CHUNK_SIZE = 900
 CHUNK_OVERLAP = 150
+OCR_THRESHOLD = 30  # if a page yields < this many chars, treat as scanned and OCR
 
 
 def classify(mime: str, filename: str) -> str:
-    """Return one of 'pdf', 'image', 'text', or 'unsupported'."""
     mime = (mime or "").lower()
     if mime in PDF_MIME_TYPES or filename.lower().endswith(".pdf"):
         return "pdf"
@@ -43,7 +54,6 @@ def classify(mime: str, filename: str) -> str:
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Sentence-aware sliding-window chunking."""
     text = re.sub(r"[ \t]+", " ", text).strip()
     if not text:
         return []
@@ -53,7 +63,6 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
     i = 0
     while i < len(text):
         end = min(i + size, len(text))
-        # try to extend to nearest sentence break
         if end < len(text):
             window = text.rfind(". ", i + size // 2, end)
             if window != -1:
@@ -65,21 +74,59 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
     return [c for c in chunks if c]
 
 
-# ---- PDF ----
-def extract_pdf_text(data: bytes) -> str:
+# ---- OCR helpers ----
+def _ocr_image(img: Image.Image) -> str:
+    """Run Tesseract on a PIL image. Returns empty string on any failure."""
+    try:
+        import pytesseract
+        return (pytesseract.image_to_string(img) or "").strip()
+    except Exception as e:
+        log.warning("Tesseract OCR failed: %s", e)
+        return ""
+
+
+# ---- PDF (with selective OCR for scanned pages) ----
+def _extract_pdf_pages(data: bytes) -> list[dict]:
+    """Return [{page, text, source}] for every page (1-indexed)."""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
-    parts: list[str] = []
+    pages: list[dict] = []
+
+    # Lazy-import for OCR
+    rendered = None
     for i, page in enumerate(reader.pages):
+        page_num = i + 1
         try:
-            t = page.extract_text() or ""
+            t = (page.extract_text() or "").strip()
         except Exception as e:  # pragma: no cover
-            log.warning("PDF page %d extract failed: %s", i, e)
+            log.warning("PDF page %d text extract failed: %s", page_num, e)
             t = ""
-        t = t.strip()
-        if t:
-            parts.append(f"[Page {i + 1}]\n{t}")
-    return "\n\n".join(parts)
+
+        if len(t) >= OCR_THRESHOLD:
+            pages.append({"page": page_num, "text": t, "source": "text"})
+            continue
+
+        # Render this page and OCR it.
+        try:
+            if rendered is None:
+                from pdf2image import convert_from_bytes
+                rendered = convert_from_bytes(data, dpi=200)
+            if 0 <= i < len(rendered):
+                ocr_text = _ocr_image(rendered[i])
+            else:
+                ocr_text = ""
+        except Exception as e:
+            log.warning("PDF page %d OCR pipeline failed: %s", page_num, e)
+            ocr_text = ""
+
+        if ocr_text:
+            pages.append({"page": page_num, "text": ocr_text, "source": "ocr"})
+        elif t:
+            pages.append({"page": page_num, "text": t, "source": "text"})
+        else:
+            pages.append({"page": page_num, "text": "", "source": "empty"})
+
+    return pages
 
 
 # ---- Text ----
@@ -92,39 +139,35 @@ def extract_text_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-# ---- Image ----
-def _normalize_image(data: bytes, mime: str) -> Tuple[bytes, str]:
-    """Ensure PNG/JPEG/WEBP, RGB, max 1600px. Returns (bytes, normalized_mime)."""
+# ---- Image (OCR + vision) ----
+def _normalize_image(data: bytes, mime: str) -> Tuple[bytes, str, Image.Image]:
     img = Image.open(io.BytesIO(data))
-    # Animated (e.g. APNG) -> first frame
     if getattr(img, "is_animated", False):
         img.seek(0)
-    if img.mode not in ("RGB", "RGBA"):
-        img = img.convert("RGB")
-    elif img.mode == "RGBA":
+    if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])
         img = bg
-    # Resize
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
     max_side = 1600
     w, h = img.size
     if max(w, h) > max_side:
         scale = max_side / float(max(w, h))
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
     buf = io.BytesIO()
-    fmt = "JPEG"
-    out_mime = "image/jpeg"
-    img.save(buf, format=fmt, quality=88)
-    return buf.getvalue(), out_mime
+    img.save(buf, format="JPEG", quality=88)
+    return buf.getvalue(), "image/jpeg", img
 
 
-async def describe_image(data: bytes, mime: str, filename: str) -> str:
-    """Use a vision LLM to describe the image + transcribe any text in it.
+async def describe_image(data: bytes, mime: str, filename: str) -> dict:
+    """Return {'description': str, 'ocr': str} via vision LLM + Tesseract."""
+    bytes_norm, _, pil_img = _normalize_image(data, mime)
 
-    Returns a long descriptive paragraph suitable for retrieval.
-    """
-    normalized, _ = _normalize_image(data, mime)
-    b64 = base64.b64encode(normalized).decode("ascii")
+    # OCR runs locally and is fast; do it in parallel with vision.
+    ocr_task = asyncio.to_thread(_ocr_image, pil_img)
+
+    b64 = base64.b64encode(bytes_norm).decode("ascii")
     model = os.environ.get("VISION_MODEL", "gpt-4o")
     provider = os.environ.get("VISION_PROVIDER", "openai")
     api_key = os.environ["EMERGENT_LLM_KEY"]
@@ -135,7 +178,7 @@ async def describe_image(data: bytes, mime: str, filename: str) -> str:
             system_message=(
                 "You are a vision assistant. Given an image, produce a thorough, factual "
                 "description suitable for search/retrieval. Include: (1) what the image shows "
-                "(scene, objects, people, layout), (2) ALL visible text transcribed verbatim, "
+                "(scene, objects, people, layout), (2) any visible text transcribed verbatim, "
                 "(3) charts/tables: report data points, axes, labels. Be specific. No commentary."
             ),
         )
@@ -150,49 +193,100 @@ async def describe_image(data: bytes, mime: str, filename: str) -> str:
         ),
         file_contents=[image_content],
     )
+
+    description = ""
     try:
         response = await chat.send_message(user_msg)
         if isinstance(response, str):
-            return response.strip()
-        text = getattr(response, "text", None) or getattr(response, "content", None)
-        return (text or str(response)).strip()
+            description = response.strip()
+        else:
+            description = (
+                getattr(response, "text", None)
+                or getattr(response, "content", None)
+                or str(response)
+            ).strip()
     except Exception as e:
-        log.exception("Vision describe failed: %s", e)
-        return f"[Vision unavailable: {str(e)[:160]}]"
+        log.exception("Vision describe failed")
+        description = f"[Vision unavailable: {str(e)[:160]}]"
+
+    ocr = (await ocr_task).strip()
+    return {"description": description, "ocr": ocr}
 
 
 async def extract(filename: str, mime: str, data: bytes) -> dict:
-    """Top-level dispatch. Returns:
+    """Top-level dispatch.
+
+    Returns:
         {
-            'kind': 'pdf'|'image'|'text',
-            'text': full extracted text,
-            'chunks': list[str],
-            'description': str (images only, mirrors text)
+            kind: 'pdf' | 'image' | 'text',
+            text: full extracted text (string),
+            chunks: [ {content, page, source} ],   # page=None for text/image
+            description: image-only summary string,
+            ocr_used: bool                          # any chunk came from OCR
         }
-    Raises ValueError on unsupported.
     """
     kind = classify(mime, filename)
     if kind == "unsupported":
         raise ValueError(f"Unsupported file type: {mime or filename}")
 
+    ocr_used = False
     if kind == "pdf":
-        text = await asyncio.to_thread(extract_pdf_text, data)
-    elif kind == "text":
-        text = extract_text_text(data)
-    elif kind == "image":
-        text = await describe_image(data, mime, filename)
-    else:  # pragma: no cover
-        raise ValueError(f"Unhandled kind: {kind}")
+        pages = await asyncio.to_thread(_extract_pdf_pages, data)
+        chunks: list[dict] = []
+        full_parts: list[str] = []
+        for p in pages:
+            if not p["text"]:
+                continue
+            if p["source"] == "ocr":
+                ocr_used = True
+            full_parts.append(f"[Page {p['page']}] {p['text']}")
+            for c in chunk_text(p["text"]):
+                chunks.append({"content": c, "page": p["page"], "source": p["source"]})
+        text = "\n\n".join(full_parts)
+        return {
+            "kind": "pdf",
+            "text": text,
+            "chunks": chunks,
+            "description": "",
+            "ocr_used": ocr_used,
+        }
 
-    text = (text or "").strip()
-    # Don't index error/unavailable strings emitted by failed extractors
-    looks_error = bool(text) and text.startswith("[") and (
-        "error" in text.lower() or "unavailable" in text.lower()
+    if kind == "text":
+        raw = extract_text_text(data)
+        chunks = [{"content": c, "page": None, "source": "text"} for c in chunk_text(raw)]
+        return {
+            "kind": "text",
+            "text": raw,
+            "chunks": chunks,
+            "description": "",
+            "ocr_used": False,
+        }
+
+    # image
+    res = await describe_image(data, mime, filename)
+    description = res["description"]
+    ocr = res["ocr"]
+    looks_error = description.startswith("[") and (
+        "error" in description.lower() or "unavailable" in description.lower()
     )
-    chunks = chunk_text(text) if text and not looks_error else []
+
+    parts = []
+    if not looks_error and description:
+        parts.append(description)
+    if ocr:
+        ocr_used = True
+        parts.append(f"\n\nText detected in image (OCR):\n{ocr}")
+    combined = "\n".join(parts).strip()
+
+    chunks = [
+        {"content": c, "page": None, "source": "ocr+vision" if ocr_used else "vision"}
+        for c in chunk_text(combined)
+    ] if combined and not looks_error else []
+
     return {
-        "kind": kind,
-        "text": text,
+        "kind": "image",
+        "text": combined,
         "chunks": chunks,
-        "description": text if kind == "image" else "",
+        "description": description if not looks_error else "",
+        "ocr_used": ocr_used,
     }

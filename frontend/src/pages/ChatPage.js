@@ -15,7 +15,12 @@ import {
   FileText,
   Image as ImageIcon,
   X,
-  CircleNotch
+  CircleNotch,
+  Microphone,
+  Stop,
+  SpeakerHigh,
+  ListBullets,
+  UploadSimple
 } from '@phosphor-icons/react';
 import { api, formatApiErrorDetail } from '../lib/api';
 import { streamAsk } from '../lib/sse';
@@ -39,24 +44,27 @@ export default function ChatPage() {
   const [uploads, setUploads] = useState([]); // attached files for current thread
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  const [summaryModal, setSummaryModal] = useState(null); // {filename, summary?, loading, error?}
+  const [dragOver, setDragOver] = useState(false);
+  const [listening, setListening] = useState(false);
   const fileInputRef = useRef(null);
+  const recognitionRef = useRef(null);
   const bottomRef = useRef(null);
 
   useEffect(() => {
     loadThreads();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (threadId) {
       loadThread(threadId);
       loadUploads(threadId);
-    } else {
-      setMessages([]);
-      setActiveThread(null);
-      setUploads([]);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Reset local view when switching back to a "new conversation".
+    setMessages([]);
+    setActiveThread(null);
+    setUploads([]);
   }, [threadId]);
 
   useEffect(() => {
@@ -94,8 +102,13 @@ export default function ChatPage() {
 
   async function handleFilePick(e) {
     const files = Array.from(e.target.files || []);
-    e.target.value = ''; // reset so same file can be picked again
+    e.target.value = '';
     if (files.length === 0) return;
+    await uploadFiles(files);
+  }
+
+  async function uploadFiles(files) {
+    if (!files || files.length === 0) return;
     setUploadError('');
     setUploading(true);
     let currentThreadId = threadId || null;
@@ -107,7 +120,6 @@ export default function ChatPage() {
         const { data } = await api.post('/uploads', form, {
           headers: { 'Content-Type': undefined }
         });
-        // If we just created a new thread on first upload, route into it
         if (!currentThreadId) {
           currentThreadId = data.thread_id;
           navigate(`/app/t/${data.thread_id}`, { replace: true });
@@ -129,6 +141,101 @@ export default function ChatPage() {
       setUploads((u) => u.filter((f) => f.file_id !== fileId));
     } catch (err) {
       // noop
+    }
+  }
+
+  async function summarizeUpload(fileId, filename) {
+    setSummaryModal({ filename, loading: true });
+    try {
+      const { data } = await api.post(`/uploads/${fileId}/summarize`);
+      setSummaryModal({ filename, summary: data.summary, loading: false });
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setSummaryModal({
+        filename,
+        loading: false,
+        error: formatApiErrorDetail(detail) || err.message || 'Summarization failed'
+      });
+    }
+  }
+
+  // --- Voice (STT) via browser Web Speech API ---
+  function startListening() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setUploadError('Voice input not supported in this browser. Try Chrome or Edge.');
+      return;
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) { /* noop */ }
+    }
+    const rec = new SR();
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
+    let finalText = '';
+    rec.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalText += transcript;
+        else interim += transcript;
+      }
+      setQuestion((q) => {
+        // append to existing text only on a fresh listen
+        const base = q.replace(/\s*\[listening…\].*$/, '');
+        if (interim) return (base ? base + ' ' : '') + interim;
+        return base;
+      });
+    };
+    rec.onend = () => {
+      setListening(false);
+      setQuestion((q) => {
+        const base = q.replace(/\s*\[listening…\].*$/, '').trim();
+        return finalText ? (base ? base + ' ' : '') + finalText.trim() : base;
+      });
+    };
+    rec.onerror = () => setListening(false);
+    recognitionRef.current = rec;
+    rec.start();
+    setListening(true);
+  }
+
+  function stopListening() {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) { /* noop */ }
+    }
+    setListening(false);
+  }
+
+  // --- Drag & Drop handlers ---
+  function handleDragOver(e) {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+      e.preventDefault();
+      setDragOver(true);
+    }
+  }
+  function handleDragLeave(e) {
+    e.preventDefault();
+    setDragOver(false);
+  }
+  function handleDrop(e) {
+    e.preventDefault();
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length > 0) uploadFiles(files);
+  }
+
+  // --- Paste-image handler on the textarea ---
+  function handlePaste(e) {
+    const items = Array.from(e.clipboardData?.items || []);
+    const fileItems = items
+      .filter((it) => it.kind === 'file')
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
+    if (fileItems.length > 0) {
+      e.preventDefault();
+      uploadFiles(fileItems);
     }
   }
 
@@ -154,9 +261,12 @@ export default function ChatPage() {
     setStreamingAnswer('');
     setPipeline({
       phase: 'checking cache',
-      agents: { local_retrieval: 'pending', general_llm: 'pending', tavily_web: 'pending', arxiv_research: 'pending' },
+      agents: uploads.length > 0
+        ? { local_retrieval: 'pending', general_llm: 'pending', tavily_web: 'pending', arxiv_research: 'pending', thread_files: 'pending' }
+        : { local_retrieval: 'pending', general_llm: 'pending', tavily_web: 'pending', arxiv_research: 'pending' },
       scores: null,
-      bestIndex: null
+      bestIndex: null,
+      hasFiles: uploads.length > 0
     });
 
     // optimistic user message
@@ -332,14 +442,28 @@ export default function ChatPage() {
       </aside>
 
       {/* Main chat */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main
+        className="flex-1 flex flex-col min-w-0 relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {dragOver && (
+          <div className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-obsidian/85 backdrop-blur-sm border-2 border-dashed border-white/60" data-testid="drop-overlay">
+            <div className="text-center">
+              <UploadSimple size={42} weight="duotone" className="mx-auto text-white" />
+              <div className="mt-3 font-mono text-[11px] tracking-[0.3em] text-white">DROP TO ATTACH</div>
+              <div className="mt-1 text-xs text-white/50">PDF · TXT · PNG · JPG · WEBP</div>
+            </div>
+          </div>
+        )}
         <header className="h-14 border-b border-white/10 px-6 flex items-center justify-between">
           <div className="font-mono text-[11px] tracking-[0.25em] text-white/60 truncate">
             {activeThread ? activeThread.title : 'NEW CONVERSATION'}
           </div>
           <div className="hidden md:flex items-center gap-2 text-[10px] font-mono text-white/40">
             <span className="w-1.5 h-1.5 bg-agent-web animate-pulse-glow" aria-hidden />
-            ENGINE READY · 4 AGENTS
+            ENGINE READY · {uploads.length > 0 ? '5' : '4'} AGENTS
           </div>
         </header>
 
@@ -385,7 +509,7 @@ export default function ChatPage() {
                 {uploadError}
               </div>
             )}
-            <AttachmentBar uploads={uploads} onRemove={removeUpload} uploading={uploading} />
+            <AttachmentBar uploads={uploads} onRemove={removeUpload} uploading={uploading} onSummarize={summarizeUpload} />
             <div className="surface flex items-end gap-2 p-3">
               <input
                 ref={fileInputRef}
@@ -403,23 +527,34 @@ export default function ChatPage() {
                 className="text-white/60 hover:text-white p-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 data-testid="attach-file-btn"
                 aria-label="Attach file"
-                title="Attach PDF / text / image"
+                title="Attach PDF / text / image (drag-drop & paste also work)"
               >
                 {uploading
                   ? <CircleNotch size={18} weight="bold" className="animate-spin" />
                   : <Paperclip size={18} weight="bold" />}
               </button>
+              <button
+                type="button"
+                onClick={listening ? stopListening : startListening}
+                className={`p-2 transition-colors ${listening ? 'text-agent-arxiv animate-pulse' : 'text-white/60 hover:text-white'}`}
+                data-testid="voice-input-btn"
+                aria-label={listening ? 'Stop voice input' : 'Start voice input'}
+                title={listening ? 'Stop recording' : 'Voice input (browser STT)'}
+              >
+                {listening ? <Stop size={18} weight="fill" /> : <Microphone size={18} weight="bold" />}
+              </button>
               <textarea
                 rows={1}
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
+                onPaste={handlePaste}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     submit(e);
                   }
                 }}
-                placeholder={uploads.length > 0 ? "Ask anything about your files — or anything else…" : "Ask anything — the engine will route, evaluate and refine…"}
+                placeholder={uploads.length > 0 ? "Ask anything about your files — or anything else…" : "Ask anything — drop files, paste images, or speak."}
                 className="flex-1 bg-transparent text-sm leading-relaxed resize-none placeholder:text-white/30 focus:outline-none min-h-[24px] max-h-[160px]"
                 data-testid="ask-input"
               />
@@ -434,10 +569,11 @@ export default function ChatPage() {
               </button>
             </div>
             <div className="mt-2 text-[10px] font-mono text-white/30">
-              ENTER to send · SHIFT+ENTER for newline · PDF / TXT / PNG · JPG up to 15MB
+              ENTER to send · SHIFT+ENTER for newline · drop / paste files · mic for voice
             </div>
           </div>
         </form>
+        <SummaryModal modal={summaryModal} onClose={() => setSummaryModal(null)} />
       </main>
     </div>
   );
@@ -499,7 +635,7 @@ function FileIcon({ kind, size = 14 }) {
   return <FileText size={size} weight="duotone" className="text-agent-local" />;
 }
 
-function AttachmentBar({ uploads, onRemove, uploading }) {
+function AttachmentBar({ uploads, onRemove, uploading, onSummarize }) {
   if (!uploads || uploads.length === 0) {
     if (!uploading) return null;
     return (
@@ -523,14 +659,26 @@ function AttachmentBar({ uploads, onRemove, uploading }) {
           {f.kind === 'image' && (
             <span className="font-mono text-[9px] tracking-wider uppercase text-agent-web/80">vision</span>
           )}
+          {f.ocr_used && (
+            <span className="font-mono text-[9px] tracking-wider uppercase text-agent-arxiv/80">OCR</span>
+          )}
           {typeof f.chunk_count === 'number' && f.chunk_count > 0 && (
             <span className="font-mono text-[9px] tracking-wider uppercase text-white/40">
               {f.chunk_count} chunk{f.chunk_count === 1 ? '' : 's'}
             </span>
           )}
           <button
-            onClick={() => onRemove(f.file_id)}
+            onClick={(e) => { e.preventDefault(); onSummarize(f.file_id, f.filename); }}
             className="text-white/40 hover:text-white transition-colors ml-1"
+            data-testid={`attachment-summarize-${f.file_id}`}
+            aria-label={`Summarize ${f.filename}`}
+            title="Summarize document"
+          >
+            <ListBullets size={12} weight="bold" />
+          </button>
+          <button
+            onClick={() => onRemove(f.file_id)}
+            className="text-white/40 hover:text-white transition-colors"
             data-testid={`attachment-remove-${f.file_id}`}
             aria-label={`Remove ${f.filename}`}
           >
@@ -544,6 +692,45 @@ function AttachmentBar({ uploads, onRemove, uploading }) {
           Processing…
         </div>
       )}
+    </div>
+  );
+}
+
+function SummaryModal({ modal, onClose }) {
+  if (!modal) return null;
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose} data-testid="summary-modal">
+      <div
+        className="surface w-full max-w-2xl max-h-[80vh] overflow-y-auto p-6 relative"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 text-white/50 hover:text-white"
+          data-testid="summary-modal-close"
+          aria-label="Close"
+        >
+          <X size={16} weight="bold" />
+        </button>
+        <div className="label-eyebrow">/ document summary</div>
+        <h3 className="mt-2 text-lg font-bold text-white truncate" title={modal.filename}>{modal.filename}</h3>
+        <div className="mt-4">
+          {modal.loading && (
+            <div className="flex items-center gap-2 text-sm text-white/60" data-testid="summary-loading">
+              <CircleNotch size={14} weight="bold" className="animate-spin" />
+              Summarizing…
+            </div>
+          )}
+          {modal.error && (
+            <div className="text-sm text-agent-arxiv font-mono" data-testid="summary-error">{modal.error}</div>
+          )}
+          {modal.summary && (
+            <pre className="text-sm leading-relaxed text-white/85 whitespace-pre-wrap font-sans" data-testid="summary-content">
+{modal.summary}
+            </pre>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -582,6 +769,7 @@ function Message({ msg, index, openTraceIndex, setOpenTraceIndex }) {
             {(msg.elapsed_ms / 1000).toFixed(1)}s
           </span>
         )}
+        <ReadAloudButton text={msg.content} index={index} />
       </div>
       <div className="text-sm leading-relaxed whitespace-pre-wrap text-white/90">{msg.content}</div>
 
@@ -601,5 +789,37 @@ function Message({ msg, index, openTraceIndex, setOpenTraceIndex }) {
         </div>
       )}
     </div>
+  );
+}
+
+function ReadAloudButton({ text, index }) {
+  const [speaking, setSpeaking] = React.useState(false);
+  if (!text) return null;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+  function toggle() {
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    u.onend = () => setSpeaking(false);
+    u.onerror = () => setSpeaking(false);
+    window.speechSynthesis.speak(u);
+    setSpeaking(true);
+  }
+  return (
+    <button
+      onClick={toggle}
+      className={`ml-2 transition-colors ${speaking ? 'text-agent-arxiv animate-pulse' : 'text-white/40 hover:text-white'}`}
+      data-testid={`read-aloud-btn-${index}`}
+      aria-label={speaking ? 'Stop reading' : 'Read aloud'}
+      title={speaking ? 'Stop' : 'Read aloud'}
+    >
+      {speaking ? <Stop size={12} weight="fill" /> : <SpeakerHigh size={12} weight="bold" />}
+    </button>
   );
 }

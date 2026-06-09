@@ -34,3 +34,5 @@ async def init_indexes():
     await db.uploaded_files.create_index("file_id", unique=True)
     await db.thread_documents.create_index([("thread_id", 1), ("user_id", 1)])
     await db.thread_documents.create_index("file_id")
+    await db.thread_documents.create_index("doc_id", unique=True)
+    await db.summaries.create_index("thread_id", unique=True)

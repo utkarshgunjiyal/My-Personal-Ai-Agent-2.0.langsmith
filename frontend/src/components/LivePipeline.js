@@ -1,27 +1,31 @@
 import React from 'react';
 import { Check, CircleNotch, Trophy } from '@phosphor-icons/react';
 
-const ORDER = ['local_retrieval', 'general_llm', 'tavily_web', 'arxiv_research'];
+const ORDER = ['local_retrieval', 'general_llm', 'tavily_web', 'arxiv_research', 'thread_files'];
 const LABEL = {
-  local_retrieval: 'LOCAL',
+  local_retrieval: 'KB',
   general_llm: 'GENERAL',
   tavily_web: 'WEB',
-  arxiv_research: 'ARXIV'
+  arxiv_research: 'ARXIV',
+  thread_files: 'YOUR FILES'
 };
 const COLOR = {
   local_retrieval: '#007AFF',
   general_llm: '#FFCC00',
   tavily_web: '#34C759',
-  arxiv_research: '#FF3B30'
+  arxiv_research: '#FF3B30',
+  thread_files: '#AF52DE'
 };
 
 /**
  * Live pipeline indicator shown while the engine is streaming.
- * `pipeline` is { agents: {name: 'pending'|'running'|'done'}, scores?: number[], bestIndex?: number, phase: string }
+ * `pipeline` is { agents: {name: 'pending'|'running'|'done'}, scores?: number[], bestIndex?: number, phase: string, hasFiles?: bool }
  */
 export default function LivePipeline({ pipeline }) {
   if (!pipeline) return null;
-  const { agents = {}, scores = null, bestIndex = null, phase = 'starting' } = pipeline;
+  const { agents = {}, scores = null, bestIndex = null, phase = 'starting', hasFiles = false } = pipeline;
+  const order = hasFiles ? ORDER : ORDER.slice(0, 4);
+  const gridCols = hasFiles ? 'sm:grid-cols-5' : 'sm:grid-cols-4';
 
   return (
     <div className="animate-fade-in-up surface p-4" data-testid="live-pipeline">
@@ -29,8 +33,8 @@ export default function LivePipeline({ pipeline }) {
         <span className="w-1.5 h-1.5 bg-white animate-pulse" aria-hidden />
         <span>ENGINE · {phase.toUpperCase()}</span>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-white/10">
-        {ORDER.map((name, idx) => {
+      <div className={`grid grid-cols-2 ${gridCols} gap-px bg-white/10`}>
+        {order.map((name, idx) => {
           const status = agents[name] || 'pending';
           const score = scores && typeof scores[idx] === 'number' ? scores[idx] : null;
           const isBest = bestIndex === idx;

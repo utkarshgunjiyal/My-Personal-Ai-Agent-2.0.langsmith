@@ -97,6 +97,12 @@ async def delete_thread(thread_id: str, user=Depends(get_current_user)):
     await db.messages.delete_many({"thread_id": thread_id})
     await db.uploaded_files.delete_many({"thread_id": thread_id, "user_id": user["user_id"]})
     await db.thread_documents.delete_many({"thread_id": thread_id, "user_id": user["user_id"]})
+    await db.summaries.delete_one({"thread_id": thread_id})
+    try:
+        import vectorstore
+        vectorstore.delete(thread_id)
+    except Exception:
+        pass
     return {"ok": True}
 
 

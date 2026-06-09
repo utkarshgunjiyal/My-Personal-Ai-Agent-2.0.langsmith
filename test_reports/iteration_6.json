@@ -1,0 +1,50 @@
+{
+  "summary": "AI Mentor 2.0 upgrade tested end-to-end. Backend: 10/11 new tests pass in /app/backend/tests/test_mentor_v2.py. NEW capabilities verified: (1) text upload creates FAISS index files at /app/data/faiss/<thread_id>.{index,ids.json}; (2) native-text PDF upload returns ocr_used=false, chunk_count>=1; (3) scanned (rasterized) PDF upload triggers OCR path (ocr_used=true) and produces chunks; (4) JPEG image with rendered text triggers vision+OCR (kind=image, ocr_used=true, description non-empty); (5) 5-agent pipeline: judge_scores has exactly 5 entries on threads with uploads, best_index points at the thread_files agent, uploads_used + memory_loaded SSE events emitted, final_answer contains the unique upload token; (6) Persistent FAISS recovery: deleting the .index + .ids.json from disk → next /api/ask/stream still grounded (auto-rebuilt from Mongo chunks; files reappear); (7) /api/uploads/{file_id}/summarize returns structured markdown (TL;DR / Key points); (8) Delete file → other file still retrievable on same thread; (9) Thread delete cascade removes /app/data/faiss/<thread_id>.* on disk and uploaded_files/thread_documents in Mongo. Frontend smoke: attach-file-btn, voice-input-btn, attachment-summarize-* chip, summary-modal + summary-modal-close all present and working; pipeline header shows '5 AGENTS' on upload threads and judge scores render as 5 entries. ONE FAILING test exposes a real bug: maybe_update_summary is never called on the SemanticCache-hit code path in chat/stream.py, so rolling summaries can be skipped when a turn is served from cache.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/ask/stream (cache-hit branch)", "issue": "memory.maybe_update_summary() is NOT called when a question is served from the SemanticCache (chat/stream.py lines 239-295 return at 295 without invoking the summary regen block at 482-489). Consequence: a thread can pass message_count=10 entirely through cache hits and never get a rolling summary written to db.summaries; subsequent memory_loaded events report has_summary=false even though spec requires regeneration every 10 messages. Repro: see TestConversationMemory.test_rolling_summary_after_10_messages — sends 5 questions, several intermediates hit the per-user cache, threads.message_count reaches 12 in Mongo but db.summaries stays empty. Manual call to memory.maybe_update_summary on the same thread succeeds and writes a 180-word summary (verified), confirming the logic is sound and only the wiring in the cache-hit branch is missing.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/uploads?thread_id=", "issue": "Carry-over from iter-4: returns 200 with empty list for non-owned/non-existent thread instead of 404 (silent; not blocking)."},
+      {"endpoint": "DELETE /api/uploads/{file_id}", "issue": "Carry-over: returns 200 {'ok': true} instead of REST-idiomatic 204."},
+      {"endpoint": "memory_loaded SSE event", "issue": "recent_messages field is computed as len(history.split('\\n')) which over-counts when any short-term message contains embedded newlines (e.g., multi-paragraph assistant answers). Pure metric noise; doesn't affect functionality."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Drag-and-drop overlay (data-testid='drop-overlay')", "issue": "Could not be triggered via synthetic DragEvent in Playwright even with DataTransfer.types=['Files']. Likely a test-tooling limitation (React's onDragOver handler may filter on isTrusted or the synthetic event is short-circuited), NOT a confirmed code bug — paste/attach/voice all work and the on-screen hint 'drop / paste files' is rendered. Recommend manual smoke test of real OS drag-drop to confirm.", "affected_selectors": ["[data-testid='drop-overlay']"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mentor_v2.py",
+    "/app/backend/tests/test_uploads.py",
+    "/app/backend/tests/test_uploads_regression.py",
+    "/app/test_reports/pytest/iter6_mentor_v2.xml"
+  ],
+  "action_items": [
+    "Fix HIGH-priority bug: in /app/backend/chat/stream.py around the cache-hit branch (lines 239-295), call await conv_memory.maybe_update_summary(db, thread_id, new_msg_count) AFTER the threads.message_count $inc and BEFORE the early return at line 295. Mirror the engine-path block at lines 482-489 (and emit summary_updated SSE if it returned True). Without this, the spec 'rolling summary regenerated every 10 messages' is violated whenever any turn hits the cache.",
+    "(Minor) Compute memory_loaded.recent_messages as len(recents) (the message list length) rather than line-count of formatted history, to avoid noise from multi-line content.",
+    "(Optional) /api/uploads list — return 404 when the thread is not owned by the caller, rather than empty array."
+  ],
+  "critical_code_review_comments": [
+    "chat/stream.py 239-295 — CACHE-HIT path is missing the rolling-summary regeneration call. It also doesn't emit a memory_loaded event (only the engine path does). If product wants the SSE contract uniform, also yield memory_loaded on cache hits (or document the cache-hit shorter envelope).",
+    "chat/stream.py 233-238 — upload_count = count_documents() is fine per-request, but cached for ~free in db.threads as message_count is. Consider caching upload_count on the thread doc to avoid a count() per request.",
+    "memory/__init__.py 70-114 — maybe_update_summary is gated strictly on message_count % SUMMARIZE_EVERY == 0. If a stream emits 2 messages and threads.message_count was previously 9 (e.g., a bug elsewhere left it odd), the boundary is missed forever. Recommend tracking 'last_summarized_at_count' on db.summaries and triggering when current - last_summarized >= SUMMARIZE_EVERY.",
+    "vectorstore/__init__.py 110-127 — search() reads index+ids from disk on every query (fine for now; for hot threads, an LRU keyed on (thread_id, mtime) of the index file would amortize). Also returns [] when files are missing — fine; callers (uploads.retriever) should call ensure_index/rebuild_for_thread when has_uploads but search() yields [] (currently retriever only calls search; the rebuild relies on retriever or pipeline somewhere — verified the auto-rebuild works in TestFaissPersistentRecovery so the wiring is OK, just worth a comment).",
+    "uploads/extractors.py 269-280 — image extractor treats description starting with '[' AND containing 'error'/'unavailable' as 'looks_error' and DROPS the description. This is fragile — a valid description that legitimately starts with a bracket like '[Whiteboard photo] showing ...' would be discarded. Tighten to startswith('[Vision unavailable') only.",
+    "uploads/routes.py 174-189 — delete_upload rebuilds the entire thread's FAISS index after every file delete. For threads with many files this is O(N) embeddings re-computed. Acceptable for now, but consider incremental remove (rebuild only if N>threshold).",
+    "chat/stream.py 482-489 — except: pass swallows summary regen failures silently. At minimum log.warning on failure so we can debug the very bug this iteration found."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mentor_v2.py (NEW — 11 tests covering text/PDF/scanned-PDF/image upload, hybrid retrieval w/ 5-agent pipeline, conversation memory, FAISS recovery, /summarize, delete + cascade)"
+  ],
+  "success_rate": {"backend": "91% (10/11 new + 15/15 legacy = 25/26 overall)", "frontend": "93% (all data-testids present and working; only drop-overlay synthetic trigger not verifiable in Playwright)"},
+  "test_credentials": "admin@decision-engine.dev / admin123 (seeded; login OK; HTTP-only cookies set).",
+  "seed_data_creation": "test_mentor_v2.py creates ~10 small uploads in the admin account (filenames: neptune_*, phoenix_*, scanned.pdf, native.pdf, nebula.jpg, casc_*, a_*, b_*, qr_*). Cascade test deletes its own thread. Other test threads remain in the sidebar; harmless and rerunnable (each uses uuid-based tokens).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run with `REACT_APP_BACKEND_URL=https://multi-source-rag.preview.emergentagent.com pytest /app/backend/tests/test_mentor_v2.py /app/backend/tests/test_uploads.py /app/backend/tests/test_uploads_regression.py -v` (the mentor_v2 suite alone takes ~2 min because of vision + scanned-PDF OCR + multi-turn streaming). The single FAIL is the cache-hit summary-regen wiring bug. After the main agent fixes chat/stream.py cache-hit branch to also call maybe_update_summary, rerun just TestConversationMemory::test_rolling_summary_after_10_messages — it should go green without other changes. The frontend drop-overlay couldn't be triggered via Playwright synthetic events; recommend a manual real-drag smoke test, or change drop-overlay show condition to also respond to non-trusted dragover for testability.",
+  "rca of the issue": "ROOT CAUSE of FAILING test (rolling summary): chat/stream.py has TWO terminal code paths after the user message is persisted — (A) cache-hit branch lines 239-295 and (B) engine branch lines ~440-516. Only branch (B) calls maybe_update_summary. Because the SemanticCache is per-user and threshold=0.72, several intermediate questions in a multi-turn conversation can semantically match prior cached answers and trigger branch (A); branch (A) increments threads.message_count by 2 but skips the summary regen block, so message_count crosses the SUMMARIZE_EVERY=10 boundary without writing to db.summaries. Once crossed, the % SUMMARIZE_EVERY == 0 check in memory.maybe_update_summary will not match again until message_count=20 (and even then only if that turn happens to take branch B). MITIGATION: add the same summary-regen block (and optionally a summary_updated SSE yield) to the cache-hit branch right before the early `return` at line 295. STRONGER MITIGATION: track last_summarized_count on db.summaries and trigger when (current_count - last_summarized_count) >= SUMMARIZE_EVERY, so we recover even if the exact boundary is skipped."
+}

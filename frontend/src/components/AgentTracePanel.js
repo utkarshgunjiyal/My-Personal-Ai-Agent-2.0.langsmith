@@ -5,14 +5,16 @@ const COLORS = {
   local_retrieval: '#007AFF',
   general_llm: '#FFCC00',
   tavily_web: '#34C759',
-  arxiv_research: '#FF3B30'
+  arxiv_research: '#FF3B30',
+  thread_files: '#AF52DE'
 };
 
 const LABELS = {
-  local_retrieval: 'LOCAL · BM25 + TFIDF',
+  local_retrieval: 'GLOBAL KB · BM25 + TFIDF',
   general_llm: 'GENERAL · LLM',
   tavily_web: 'WEB · TAVILY',
-  arxiv_research: 'RESEARCH · ARXIV'
+  arxiv_research: 'RESEARCH · ARXIV',
+  thread_files: 'YOUR FILES · HYBRID + FAISS'
 };
 
 export default function AgentTracePanel({ traces, scores, bestIndex }) {

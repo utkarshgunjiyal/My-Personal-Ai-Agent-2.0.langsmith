@@ -1,13 +1,20 @@
-"""Streaming /api/ask/stream endpoint.
+"""Streaming /api/ask/stream endpoint — AI Mentor 2.0 pipeline.
 
-Emits Server-Sent Events for live UI updates:
-    cache_check    {hit, similarity?, cached_question?}
-    agent_start    {index, name, color}
-    agent_complete {index, name, answer, elapsed_ms}
-    judge_scores   {scores: number[], best_index}
-    refine_token   {delta}
-    done           {message_id, thread_id, elapsed_ms}
-    error          {message}
+SSE events emitted:
+    thread          {thread_id, is_new}
+    cache_check     {hit, similarity?, matched_question?, answer?}
+    uploads_used    {file_count, matched_chunks}
+    memory_loaded   {has_summary, recent_messages}
+    agent_start     {index, name, color}
+    agent_complete  {index, name, answer, elapsed_ms, color}
+    judge_scores    {scores, best_index}
+    refine_token    {delta}
+    summary_updated {summary}        # only when running summary regenerated
+    done            {...}
+    error           {message}
+
+The "thread_files" agent is appended as a 5th agent when the thread has
+uploads; otherwise the 4 global agents run as before.
 """
 import asyncio
 import json
@@ -21,14 +28,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+import memory as conv_memory
 from agents.cache import SemanticCache
 from agents.external import arxiv_search_context, tavily_search_context
-from agents.graph import AGENT_META, _is_error_trace
+from agents.graph import _is_error_trace
 from agents.llm import call_llm, stream_llm
 from agents.retrieval import HybridRetriever
 from auth.deps import get_current_user
 from db import get_db
-from uploads.retriever import retrieve_thread_docs, format_docs_for_context
+from uploads.retriever import format_docs_for_context, retrieve_thread_docs
 
 router = APIRouter(prefix="/api", tags=["chat-stream"])
 
@@ -53,10 +61,20 @@ class AskStreamIn(BaseModel):
     thread_id: str | None = None
 
 
+# 4 global agents + 1 conditional thread-files agent.
+GLOBAL_AGENT_META = [
+    ("local_retrieval", "#007AFF"),  # Global Knowledge RAG
+    ("general_llm", "#FFCC00"),
+    ("tavily_web", "#34C759"),
+    ("arxiv_research", "#FF3B30"),
+]
+THREAD_FILES_AGENT = ("thread_files", "#AF52DE")
+
+
 AGENT_SYSTEMS = {
     "local_retrieval": (
-        "You are a precise technical assistant. Answer using ONLY the local retrieved context. "
-        "If the context is insufficient, say so explicitly. Be concise (4-8 sentences)."
+        "You are the Global Knowledge agent. Answer using ONLY the provided knowledge-base context. "
+        "If the KB context is insufficient, say so explicitly. Be concise (4-8 sentences)."
     ),
     "general_llm": (
         "You are a knowledgeable AI assistant. Answer clearly and concisely (4-8 sentences). "
@@ -71,7 +89,25 @@ AGENT_SYSTEMS = {
         "You are a research-paper analyst. Use the arXiv context to answer with a research lens. "
         "Cite paper titles when relevant. If no papers were retrieved, say so plainly."
     ),
+    "thread_files": (
+        "You are the user's personal Document agent. Answer using ONLY the user's uploaded-document "
+        "context for this thread. ALWAYS cite the filename and page when you use a chunk "
+        "(e.g. 'per resume.pdf, page 2'). Faithfully include specific values (names, tokens, "
+        "numbers, quotes) from the uploaded content. If the uploaded context does not contain "
+        "the answer, say so plainly — do NOT fall back to general knowledge."
+    ),
 }
+
+
+def _wrap_with_memory(user_question: str, summary: str, history: str) -> str:
+    """Prepend conversation memory to the per-agent question."""
+    parts = []
+    if summary:
+        parts.append(f"Conversation summary so far:\n{summary}")
+    if history:
+        parts.append(f"Recent messages:\n{history}")
+    parts.append(f"Current question: {user_question}")
+    return "\n\n".join(parts)
 
 
 async def _run_one_agent(
@@ -83,7 +119,6 @@ async def _run_one_agent(
     context: str,
     queue: asyncio.Queue,
 ):
-    """Push agent_start then run, then push agent_complete (with answer)."""
     await queue.put(_sse("agent_start", {"index": index, "name": name, "color": color}))
     started = time.perf_counter()
     try:
@@ -135,8 +170,8 @@ async def _score_trace(trace: dict, question: str, *, has_uploads: bool = False)
             "IMPORTANT: The user has uploaded their OWN documents to this thread. "
             "An answer that uses or quotes the user's uploaded content (e.g. cites a filename, "
             "transcribes a value from their file, or paraphrases an uploaded passage) MUST be "
-            "scored 9 or 10 — that is the desired behavior. Do NOT penalise answers for "
-            "revealing content from the user's own uploaded files; that content belongs to the user. "
+            "scored 9 or 10. Do NOT penalise revealing content from the user's own files; "
+            "that content belongs to the user. "
             "Conversely, an answer that refuses or claims it 'cannot see the attachment' when the "
             "user clearly attached one MUST be scored 2 or below. "
         )
@@ -194,16 +229,14 @@ async def _stream_engine(
         }
     )
 
-    # --- Check semantic cache (skipped when thread has uploaded files, since
-    # grounded answers depend on per-thread context and must not pollute the
-    # per-user cache) ---
+    # --- Cache (skipped if thread has uploaded files) ---
     upload_count = await db.uploaded_files.count_documents(
         {"thread_id": thread_id, "user_id": user_id}
     )
+    has_uploads = upload_count > 0
     cache = await _user_cache(user_id)
-    hit = cache.search(question) if upload_count == 0 else None
+    hit = cache.search(question) if not has_uploads else None
     if hit:
-        # Emit cache event + done; persist assistant message with cache hit.
         yield _sse(
             "cache_check",
             {
@@ -263,62 +296,72 @@ async def _stream_engine(
 
     yield _sse("cache_check", {"hit": False}).encode()
 
+    # --- Conversation memory (long-term summary + short-term last messages) ---
+    mem = await conv_memory.compose_context(db, thread_id)
+    yield _sse(
+        "memory_loaded",
+        {
+            "has_summary": bool(mem["summary"]),
+            "recent_messages": len(mem["history"].split("\n")) if mem["history"] else 0,
+        },
+    ).encode()
+
     # --- Build agent contexts ---
     docs = _retriever.search(question)
-    local_ctx = "\n".join(f"- {d.content}" for d in docs)
+    kb_ctx = "\n".join(f"- {d.content}" for d in docs)
 
-    # Per-thread uploaded-document retrieval (user's own PDFs / images / text)
-    user_docs = await retrieve_thread_docs(
-        db, thread_id=thread_id, user_id=user_id, query=question, top_k=4
-    )
-    user_ctx = format_docs_for_context(user_docs)
-    has_uploads = upload_count > 0
-    if user_ctx:
-        local_ctx = f"=== Your Uploaded Documents ===\n{user_ctx}\n\n=== Built-in Knowledge Base ===\n{local_ctx}"
-
-    web_ctx = await asyncio.to_thread(tavily_search_context, question, 3)
-    arxiv_ctx = await asyncio.to_thread(arxiv_search_context, question, 3)
-
-    local_system = AGENT_SYSTEMS["local_retrieval"]
-    if user_ctx:
-        local_system = (
-            "You are a precise technical assistant. Answer using the provided context, "
-            "PRIORITIZING the user's uploaded documents over the built-in knowledge base. "
-            "Quote / cite filenames inline when you use them (e.g., '(per resume.pdf)'). "
-            "If neither source is sufficient, say so explicitly. Be concise (4-8 sentences)."
+    user_docs = []
+    user_ctx = ""
+    if has_uploads:
+        user_docs = await retrieve_thread_docs(
+            db, thread_id=thread_id, user_id=user_id, query=question, top_k=5
         )
-
-    contexts = {
-        "local_retrieval": (f"Local Context:\n{local_ctx}\n\nQuestion: {question}", local_ctx),
-        "general_llm": (f"Question: {question}", "(no external context)"),
-        "tavily_web": (f"Web Context:\n{web_ctx}\n\nQuestion: {question}", web_ctx),
-        "arxiv_research": (f"arXiv Context:\n{arxiv_ctx}\n\nQuestion: {question}", arxiv_ctx),
-    }
-
-    if upload_count > 0:
+        user_ctx = format_docs_for_context(user_docs)
         yield _sse(
             "uploads_used",
             {"file_count": int(upload_count), "matched_chunks": len(user_docs)},
         ).encode()
 
+    web_ctx = await asyncio.to_thread(tavily_search_context, question, 3)
+    arxiv_ctx = await asyncio.to_thread(arxiv_search_context, question, 3)
+
+    # Compose memory-aware question once and reuse per agent
+    memo_q = _wrap_with_memory(question, mem["summary"], mem["history"])
+
+    contexts: dict[str, tuple[str, str]] = {
+        "local_retrieval": (
+            f"Knowledge Base Context:\n{kb_ctx}\n\n{memo_q}",
+            kb_ctx,
+        ),
+        "general_llm": (memo_q, "(no external context)"),
+        "tavily_web": (f"Web Context:\n{web_ctx}\n\n{memo_q}", web_ctx),
+        "arxiv_research": (f"arXiv Context:\n{arxiv_ctx}\n\n{memo_q}", arxiv_ctx),
+    }
+    if has_uploads:
+        contexts["thread_files"] = (
+            f"User's Uploaded Documents:\n{user_ctx}\n\n{memo_q}"
+            if user_ctx
+            else f"User's Uploaded Documents:\n(no relevant chunk matched this query)\n\n{memo_q}",
+            user_ctx,
+        )
+
+    active_meta = list(GLOBAL_AGENT_META)
+    if has_uploads:
+        active_meta.append(THREAD_FILES_AGENT)
+
     # --- Run agents concurrently, push events as each completes ---
     queue: asyncio.Queue = asyncio.Queue()
     agent_tasks: list[asyncio.Task] = []
-    for idx, (name, color) in enumerate(AGENT_META):
+    for idx, (name, color) in enumerate(active_meta):
         prompt, ctx = contexts[name]
-        sys_prompt = local_system if name == "local_retrieval" else AGENT_SYSTEMS[name]
         agent_tasks.append(
             asyncio.create_task(
-                _run_one_agent(idx, name, color, sys_prompt, prompt, ctx, queue)
+                _run_one_agent(idx, name, color, AGENT_SYSTEMS[name], prompt, ctx, queue)
             )
         )
-    pending = set(agent_tasks)
 
-    # Drain events from the queue as they arrive, finishing when all agent
-    # tasks complete AND the queue is empty.
     async def event_pump():
         while True:
-            # If all tasks done and queue empty, exit
             if all(t.done() for t in agent_tasks) and queue.empty():
                 return
             try:
@@ -340,30 +383,25 @@ async def _stream_engine(
         t["score"] = float(s)
     best_index = int(max(range(len(scores)), key=lambda i: scores[i])) if scores else -1
 
-    # Hard override: when the user has uploaded files AND the local_retrieval
-    # agent actually grounded its answer in them, prefer it. This corrects for
-    # LLM-judge bias against revealing content from user-owned uploads.
+    # Hard override: prefer thread_files agent when it actually grounds in uploads.
     if has_uploads and user_docs and traces:
-        local_idx = next((i for i, t in enumerate(traces) if t.get("name") == "local_retrieval"), -1)
-        if local_idx >= 0 and not _is_error_trace(traces[local_idx]):
-            local_ans = (traces[local_idx].get("answer") or "").lower()
-            # Heuristic: if the local agent's answer references a known uploaded
-            # filename OR contains a substring from any retrieved chunk, prefer it.
+        tf_idx = next((i for i, t in enumerate(traces) if t.get("name") == "thread_files"), -1)
+        if tf_idx >= 0 and not _is_error_trace(traces[tf_idx]):
+            tf_ans = (traces[tf_idx].get("answer") or "").lower()
             uploaded_filenames = {d.filename.lower() for d in user_docs}
-            chunk_tokens = set()
+            chunk_tokens: set[str] = set()
             for d in user_docs:
                 for tok in re.findall(r"[A-Za-z0-9_\-]{6,}", d.content):
                     chunk_tokens.add(tok.lower())
             grounded = (
-                any(fn in local_ans for fn in uploaded_filenames)
-                or any(tok in local_ans for tok in list(chunk_tokens)[:200])
+                any(fn in tf_ans for fn in uploaded_filenames)
+                or any(tok in tf_ans for tok in list(chunk_tokens)[:200])
             )
             if grounded:
-                # Boost local score so the trace reflects the override too.
                 scores = list(scores)
-                scores[local_idx] = max(scores[local_idx], 9.5)
-                traces[local_idx]["score"] = float(scores[local_idx])
-                best_index = local_idx
+                scores[tf_idx] = max(scores[tf_idx], 9.5)
+                traces[tf_idx]["score"] = float(scores[tf_idx])
+                best_index = tf_idx
 
     yield _sse(
         "judge_scores",
@@ -376,7 +414,7 @@ async def _stream_engine(
         for i, t in enumerate(traces)
     )
     refine_system = (
-        "You are the final answer refiner for a multi-agent AI system. "
+        "You are the final answer refiner for a multi-agent AI mentor. "
         "Synthesize a single, definitive answer that is technically accurate, clear and concise. "
         "Prefer the best-scored answer's content, but incorporate useful detail from others. "
         "Do not include unsupported claims. Do not mention the agents."
@@ -391,7 +429,7 @@ async def _stream_engine(
         )
     best_answer = traces[best_index]["answer"] if best_index >= 0 else ""
     refine_prompt = (
-        f"Question:\n{question}\n\nCandidate Answers:\n{candidates}\n\n"
+        f"{memo_q}\n\nCandidate Answers:\n{candidates}\n\n"
         f"Best (selected by judge):\n{best_answer}\n\nProduce the final answer."
     )
 
@@ -401,7 +439,6 @@ async def _stream_engine(
             final_text_parts.append(delta)
             yield _sse("refine_token", {"delta": delta}).encode()
     except Exception as e:
-        # Fallback: pick best non-error candidate
         non_err = [t for t in traces if not _is_error_trace(t)]
         if non_err:
             non_err.sort(key=lambda t: t.get("score", 0), reverse=True)
@@ -432,15 +469,25 @@ async def _stream_engine(
         "created_at": datetime.now(timezone.utc),
     }
     await db.messages.insert_one(asst_doc)
-    # Skip cross-thread semantic cache when the answer depends on the user's
-    # per-thread uploaded documents — caching would serve the wrong answer
-    # in other threads (or after the user removes the file).
     if not has_uploads:
         await cache.add(db, user_id, question, final_answer)
-    await db.threads.update_one(
+
+    upd = await db.threads.find_one_and_update(
         {"thread_id": thread_id},
         {"$inc": {"message_count": 2}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+        return_document=False,
     )
+    new_msg_count = ((upd or {}).get("message_count") or 0) + 2
+
+    # Rolling summary regeneration (every N messages).
+    try:
+        updated = await conv_memory.maybe_update_summary(db, thread_id, new_msg_count)
+        if updated:
+            new_summary = await conv_memory.get_summary(db, thread_id)
+            yield _sse("summary_updated", {"summary": new_summary}).encode()
+    except Exception:
+        pass
+
     await db.agent_runs.insert_one(
         {
             "user_id": user_id,
@@ -478,7 +525,10 @@ async def ask_stream(body: AskStreamIn, request: Request, user=Depends(get_curre
     async def gen():
         try:
             async for chunk in _stream_engine(
-                question=question, user_id=user["user_id"], thread_id=body.thread_id, request=request
+                question=question,
+                user_id=user["user_id"],
+                thread_id=body.thread_id,
+                request=request,
             ):
                 yield chunk
         except Exception as e:
