@@ -68,16 +68,22 @@ async def compose_context(db, thread_id: str) -> dict[str, str]:
 
 
 async def maybe_update_summary(db, thread_id: str, message_count: int) -> bool:
-    """If `message_count` crosses a SUMMARIZE_EVERY boundary, regenerate summary.
-
-    Returns True if a summary was rewritten.
+    """If at least SUMMARIZE_EVERY messages have elapsed since the last summary,
+    regenerate the rolling summary. Uses a delta-against-last-summarized counter
+    (rather than strict modulus) so we still update even if a boundary turn was
+    served from cache or skipped for any other reason.
     """
     if message_count < SUMMARIZE_EVERY:
         return False
-    if message_count % SUMMARIZE_EVERY != 0:
+
+    existing = await db.summaries.find_one(
+        {"thread_id": thread_id},
+        {"_id": 0, "message_count": 1},
+    )
+    last_count = (existing or {}).get("message_count", 0) or 0
+    if message_count - last_count < SUMMARIZE_EVERY:
         return False
 
-    # Pull a wider window for summarization (last 20 messages).
     msgs = await get_recent_messages(db, thread_id, limit=20)
     if not msgs:
         return False

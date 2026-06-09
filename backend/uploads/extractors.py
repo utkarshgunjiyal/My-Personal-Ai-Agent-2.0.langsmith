@@ -266,9 +266,9 @@ async def extract(filename: str, mime: str, data: bytes) -> dict:
     res = await describe_image(data, mime, filename)
     description = res["description"]
     ocr = res["ocr"]
-    looks_error = description.startswith("[") and (
-        "error" in description.lower() or "unavailable" in description.lower()
-    )
+    # Be precise about which descriptions to drop: only those produced by the
+    # vision-unavailable fallback (which start with this exact prefix).
+    looks_error = description.startswith("[Vision unavailable")
 
     parts = []
     if not looks_error and description:

@@ -116,17 +116,18 @@ class TestUploadGroundedAnswer:
         first_agent = ev_names.index("agent_start") if "agent_start" in ev_names else -1
         assert first_agent > first_uploads, "uploads_used must come before agent_start"
 
-        # judge_scores best_index must be local_retrieval (index 0 per AGENT_META)
+        # judge_scores best_index must point at the thread_files agent
+        # (AI Mentor 2.0: user-uploaded files now have a dedicated agent, not local_retrieval).
         judge = _get_event(events, "judge_scores")
         assert judge is not None, "judge_scores event missing"
-        # local_retrieval is the first agent in AGENT_META
         agent_start_events = _get_all_events(events, "agent_start")
-        local_idx = next(
-            (e["index"] for e in agent_start_events if e.get("name") == "local_retrieval"),
-            0,
+        target_idx = next(
+            (e["index"] for e in agent_start_events if e.get("name") == "thread_files"),
+            None,
         )
-        assert judge["best_index"] == local_idx, (
-            f"best_index={judge['best_index']} expected local_retrieval idx={local_idx}, "
+        assert target_idx is not None, "thread_files agent did not start (uploads not detected?)"
+        assert judge["best_index"] == target_idx, (
+            f"best_index={judge['best_index']} expected thread_files idx={target_idx}, "
             f"scores={judge.get('scores')}"
         )
 
@@ -230,13 +231,19 @@ class TestStreamWithoutUploadsCachesNormally:
     identical question on the same user should be cache_hit=true."""
 
     def test_no_uploads_cache_miss_then_hit(self, session):
-        # Use a question phrased uniquely so we don't collide with prior cache
-        marker = uuid.uuid4().hex[:6]
-        question = f"Briefly, what does the acronym TST-{marker} mean in computing?"
+        # Use a sufficiently unique question template so it doesn't semantically
+        # match anything else in the per-user cache.
+        marker = uuid.uuid4().hex[:8]
+        question = (
+            f"Pretend ZX-{marker} is a fictional sorting algorithm I just invented. "
+            "Give it a one-sentence definition."
+        )
         ev1 = _stream_ask(session, question)
         cc1 = _get_event(ev1, "cache_check")
         done1 = _get_event(ev1, "done")
-        assert cc1 is not None and cc1.get("hit") is False
+        assert cc1 is not None and cc1.get("hit") is False, (
+            f"first call should miss cache; got {cc1}"
+        )
         assert done1 is not None and done1.get("cache_hit") is False
 
         # Repeat on a fresh thread (no uploads anywhere); should serve from cache

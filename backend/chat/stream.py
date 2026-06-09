@@ -236,6 +236,9 @@ async def _stream_engine(
     has_uploads = upload_count > 0
     cache = await _user_cache(user_id)
     hit = cache.search(question) if not has_uploads else None
+    # Load conversation memory regardless of cache outcome so the SSE contract
+    # is uniform (memory_loaded is always emitted after cache_check).
+    mem = await conv_memory.compose_context(db, thread_id)
     if hit:
         yield _sse(
             "cache_check",
@@ -244,6 +247,13 @@ async def _stream_engine(
                 "similarity": hit["similarity"],
                 "matched_question": hit["matched_question"],
                 "answer": hit["answer"],
+            },
+        ).encode()
+        yield _sse(
+            "memory_loaded",
+            {
+                "has_summary": bool(mem["summary"]),
+                "recent_messages": len([m for m in (mem["history"] or "").split("\n") if m]),
             },
         ).encode()
         msg_id = f"msg_{uuid.uuid4().hex[:14]}"
@@ -264,10 +274,22 @@ async def _stream_engine(
             "created_at": datetime.now(timezone.utc),
         }
         await db.messages.insert_one(asst_doc)
-        await db.threads.update_one(
+        upd = await db.threads.find_one_and_update(
             {"thread_id": thread_id},
             {"$inc": {"message_count": 2}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+            return_document=False,
         )
+        new_msg_count = ((upd or {}).get("message_count") or 0) + 2
+        # Rolling summary must also run on cache-hit turns so the boundary
+        # isn't skipped just because the engine path didn't execute.
+        try:
+            updated = await conv_memory.maybe_update_summary(db, thread_id, new_msg_count)
+            if updated:
+                new_summary = await conv_memory.get_summary(db, thread_id)
+                yield _sse("summary_updated", {"summary": new_summary}).encode()
+        except Exception as e:
+            import logging as _logging
+            _logging.getLogger("chat.stream").warning("Cache-hit summary regen failed: %s", e)
         await db.agent_runs.insert_one(
             {
                 "user_id": user_id,
@@ -296,13 +318,12 @@ async def _stream_engine(
 
     yield _sse("cache_check", {"hit": False}).encode()
 
-    # --- Conversation memory (long-term summary + short-term last messages) ---
-    mem = await conv_memory.compose_context(db, thread_id)
+    # --- Emit memory loaded SSE (already composed above) ---
     yield _sse(
         "memory_loaded",
         {
             "has_summary": bool(mem["summary"]),
-            "recent_messages": len(mem["history"].split("\n")) if mem["history"] else 0,
+            "recent_messages": len([m for m in (mem["history"] or "").split("\n") if m]),
         },
     ).encode()
 
