@@ -23,3 +23,9 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# AI Mentor 2.0 runtime data — regenerated automatically from MongoDB
+/app/data/
+data/faiss/
+*.index
+*.ids.json
