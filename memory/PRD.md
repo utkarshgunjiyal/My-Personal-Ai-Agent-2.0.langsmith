@@ -61,6 +61,7 @@ React (Tailwind, Phosphor, Recharts) → FastAPI `/api` → LangGraph workflow �
 - P2: Production cost calculator visualization
 - P2: Cross-encoder reranker (e.g. bge-reranker-base) to replace RRF for higher precision retrieval
 - P2: Per-thread `upload_count` denormalized to thread doc to skip the per-request count_documents() call
+- [x] **DONE 2026-06-22 — LangSmith Level-1 tracing**: `@traceable` on `call_llm` / `stream_llm` (async-generator with `reduce_fn` aggregator) / `_run_one_agent` / `_score_trace`. Each `/api/ask/stream` is wrapped as a single root `ask_stream` trace via `tracing.trace_root` (graceful no-op when `LANGSMITH_TRACING` is unset). Judge scores (per-agent + `judge_best_score`) are pushed to LangSmith Feedback API; root run metadata carries `user_id`, `thread_id`, `best_agent`, `has_uploads`, `upload_count`. Project: `ai-mentor-prod`.
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.

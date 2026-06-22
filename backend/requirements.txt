@@ -23,3 +23,4 @@ pdf2image==1.17.0
 faiss-cpu==1.14.2
 rank-bm25==0.2.2
 fastembed==0.8.0
+langsmith==0.8.18

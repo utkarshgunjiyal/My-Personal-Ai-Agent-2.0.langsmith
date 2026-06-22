@@ -5,6 +5,8 @@ from typing import AsyncIterator
 
 from emergentintegrations.llm.chat import LlmChat, TextDelta, UserMessage
 
+from tracing import traceable
+
 
 DEFAULT_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
 DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-4.1-mini")
@@ -25,6 +27,7 @@ def _new_chat(system_message: str, session_id: str | None = None, provider: str 
     )
 
 
+@traceable(run_type="llm", name="call_llm")
 async def call_llm(
     system_message: str,
     user_text: str,
@@ -42,6 +45,12 @@ async def call_llm(
     return (text or str(response)).strip()
 
 
+def _concat_chunks(chunks):
+    """LangSmith aggregator: present streamed tokens as a single string."""
+    return "".join(c for c in chunks if isinstance(c, str))
+
+
+@traceable(run_type="llm", name="stream_llm", reduce_fn=_concat_chunks)
 async def stream_llm(
     system_message: str,
     user_text: str,

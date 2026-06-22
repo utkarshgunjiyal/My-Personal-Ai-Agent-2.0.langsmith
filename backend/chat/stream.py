@@ -36,6 +36,7 @@ from agents.llm import call_llm, stream_llm
 from agents.retrieval import HybridRetriever
 from auth.deps import get_current_user
 from db import get_db
+from tracing import add_feedback, current_run_id, trace_root, traceable, update_current_metadata
 from uploads.retriever import format_docs_for_context, retrieve_thread_docs
 
 router = APIRouter(prefix="/api", tags=["chat-stream"])
@@ -110,6 +111,7 @@ def _wrap_with_memory(user_question: str, summary: str, history: str) -> str:
     return "\n\n".join(parts)
 
 
+@traceable(run_type="chain", name="run_one_agent")
 async def _run_one_agent(
     index: int,
     name: str,
@@ -119,6 +121,7 @@ async def _run_one_agent(
     context: str,
     queue: asyncio.Queue,
 ):
+    update_current_metadata(agent_name=name, agent_index=index)
     await queue.put(_sse("agent_start", {"index": index, "name": name, "color": color}))
     started = time.perf_counter()
     try:
@@ -155,7 +158,9 @@ async def _run_one_agent(
     return trace
 
 
+@traceable(run_type="chain", name="score_trace")
 async def _score_trace(trace: dict, question: str, *, has_uploads: bool = False) -> float:
+    update_current_metadata(agent_name=trace.get("name"), has_uploads=has_uploads)
     if _is_error_trace(trace):
         return 0.0
     base_rules = (
@@ -192,6 +197,40 @@ async def _stream_engine(
     db = get_db()
     started_total = time.perf_counter()
 
+    # Open a LangSmith root trace for the entire SSE lifecycle. All
+    # @traceable helpers (agents, judge, LLM calls) attach as children.
+    async with trace_root(
+        name="ask_stream",
+        run_type="chain",
+        inputs={"question": question, "thread_id": thread_id},
+        metadata={"user_id": user_id, "thread_id": thread_id},
+        tags=["ask_stream", "api"],
+    ) as root_rt:
+        root_run_id = current_run_id()
+        async for chunk in _run_engine(
+            db=db,
+            started_total=started_total,
+            question=question,
+            user_id=user_id,
+            thread_id=thread_id,
+            request=request,
+            root_run_id=root_run_id,
+            root_rt=root_rt,
+        ):
+            yield chunk
+
+
+async def _run_engine(
+    *,
+    db,
+    started_total: float,
+    question: str,
+    user_id: str,
+    thread_id: str | None,
+    request: Request,
+    root_run_id: str | None,
+    root_rt,
+) -> AsyncIterator[bytes]:
     # --- Resolve / create thread ---
     is_new_thread = False
     if thread_id:
@@ -428,6 +467,28 @@ async def _stream_engine(
         "judge_scores",
         {"scores": [float(s) for s in scores], "best_index": best_index},
     ).encode()
+
+    # Push judge scores → LangSmith feedback so the root run is sortable by quality.
+    if root_run_id:
+        add_feedback(
+            root_run_id,
+            "judge_best_score",
+            score=float(scores[best_index]) if scores and best_index >= 0 else 0.0,
+            comment=f"best agent: {traces[best_index]['name']}" if traces and best_index >= 0 else None,
+        )
+        for t, s in zip(traces, scores):
+            add_feedback(
+                root_run_id,
+                f"agent_{t['name']}_score",
+                score=float(s),
+                comment=t.get("answer", "")[:200],
+            )
+        update_current_metadata(
+            best_agent=traces[best_index]["name"] if traces and best_index >= 0 else None,
+            best_score=float(scores[best_index]) if scores and best_index >= 0 else None,
+            has_uploads=has_uploads,
+            upload_count=int(upload_count) if has_uploads else 0,
+        )
 
     # --- Refine (streamed) ---
     candidates = "\n\n".join(
