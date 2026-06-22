@@ -5,8 +5,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 COPY backend/requirements.txt .
-RUN pip install -r requirements.txt \
-    && pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+RUN pip install -r requirements.txt
 
 COPY backend/ .
 
