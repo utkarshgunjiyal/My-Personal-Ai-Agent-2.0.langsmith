@@ -36,7 +36,16 @@ from agents.llm import call_llm, stream_llm
 from agents.retrieval import HybridRetriever
 from auth.deps import get_current_user
 from db import get_db
-from tracing import add_feedback, current_run_id, trace_root, traceable, update_current_metadata
+from tracing import (
+    add_current_tags,
+    add_feedback,
+    current_run_id,
+    set_current_outputs,
+    trace_root,
+    trace_url,
+    traceable,
+    update_current_metadata,
+)
 from uploads.retriever import format_docs_for_context, retrieve_thread_docs
 
 router = APIRouter(prefix="/api", tags=["chat-stream"])
@@ -111,7 +120,7 @@ def _wrap_with_memory(user_question: str, summary: str, history: str) -> str:
     return "\n\n".join(parts)
 
 
-@traceable(run_type="chain", name="run_one_agent")
+@traceable(run_type="chain", name="run_one_agent", tags=["agent"])
 async def _run_one_agent(
     index: int,
     name: str,
@@ -121,6 +130,7 @@ async def _run_one_agent(
     context: str,
     queue: asyncio.Queue,
 ):
+    add_current_tags(f"agent:{name}")
     update_current_metadata(agent_name=name, agent_index=index)
     await queue.put(_sse("agent_start", {"index": index, "name": name, "color": color}))
     started = time.perf_counter()
@@ -158,8 +168,9 @@ async def _run_one_agent(
     return trace
 
 
-@traceable(run_type="chain", name="score_trace")
+@traceable(run_type="chain", name="score_trace", tags=["judge"])
 async def _score_trace(trace: dict, question: str, *, has_uploads: bool = False) -> float:
+    add_current_tags(f"judge:{trace.get('name')}")
     update_current_metadata(agent_name=trace.get("name"), has_uploads=has_uploads)
     if _is_error_trace(trace):
         return 0.0
@@ -312,6 +323,23 @@ async def _run_engine(
             "elapsed_ms": elapsed_ms,
             "created_at": datetime.now(timezone.utc),
         }
+        # --- Cache hit: enrich the trace and persist the trace id ----------
+        add_current_tags("cache_hit")
+        update_current_metadata(
+            cache_hit=True,
+            cache_similarity=float(hit["similarity"]),
+            best_agent="cache",
+        )
+        set_current_outputs(
+            {
+                "final_answer": hit["answer"],
+                "source": "semantic_cache",
+                "matched_question": hit["matched_question"],
+                "similarity": float(hit["similarity"]),
+            }
+        )
+        asst_doc["ls_run_id"] = root_run_id
+        asst_doc["ls_url"] = trace_url(root_run_id)
         await db.messages.insert_one(asst_doc)
         upd = await db.threads.find_one_and_update(
             {"thread_id": thread_id},
@@ -351,6 +379,8 @@ async def _run_engine(
                 "cache_similarity": float(hit["similarity"]),
                 "cached_question": hit["matched_question"],
                 "final_answer": hit["answer"],
+                "ls_run_id": root_run_id,
+                "ls_url": trace_url(root_run_id),
             },
         ).encode()
         return
@@ -367,6 +397,8 @@ async def _run_engine(
     ).encode()
 
     # --- Build agent contexts ---
+    if has_uploads:
+        add_current_tags("has_uploads")
     docs = _retriever.search(question)
     kb_ctx = "\n".join(f"- {d.content}" for d in docs)
 
@@ -532,6 +564,17 @@ async def _run_engine(
 
     final_answer = "".join(final_text_parts).strip()
 
+    # --- Set root trace outputs so the LangSmith dashboard renders this run ---
+    set_current_outputs(
+        {
+            "final_answer": final_answer,
+            "best_agent": traces[best_index]["name"] if traces and best_index >= 0 else None,
+            "best_score": float(scores[best_index]) if scores and best_index >= 0 else None,
+            "agent_count": len(traces),
+            "has_uploads": has_uploads,
+        }
+    )
+
     # --- Persist assistant message + cache + agent_run ---
     elapsed_ms = int((time.perf_counter() - started_total) * 1000)
     msg_id = f"msg_{uuid.uuid4().hex[:14]}"
@@ -548,6 +591,8 @@ async def _run_engine(
         "scores": [float(s) for s in scores],
         "best_index": best_index,
         "elapsed_ms": elapsed_ms,
+        "ls_run_id": root_run_id,
+        "ls_url": trace_url(root_run_id),
         "created_at": datetime.now(timezone.utc),
     }
     await db.messages.insert_one(asst_doc)
@@ -594,6 +639,8 @@ async def _run_engine(
             "traces": traces,
             "scores": [float(s) for s in scores],
             "best_index": best_index,
+            "ls_run_id": root_run_id,
+            "ls_url": trace_url(root_run_id),
         },
     ).encode()
 

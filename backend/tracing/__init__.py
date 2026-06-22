@@ -188,3 +188,72 @@ def update_current_metadata(**kwargs: Any) -> None:
             rt.metadata.update({k: v for k, v in kwargs.items() if v is not None})
     except Exception:
         pass
+
+
+def set_current_outputs(outputs: dict) -> None:
+    """Attach outputs to the active run (so the dashboard shows the final answer)."""
+    sdk = _sdk()
+    if sdk is None:
+        return
+    try:
+        rt = sdk["get_current_run_tree"]()
+        if rt is not None and outputs:
+            # add_outputs merges; outputs map directly to the run record
+            rt.add_outputs(outputs)
+    except Exception:
+        pass
+
+
+def add_current_tags(*tags: str) -> None:
+    """Append tags to the active run (no-op when disabled)."""
+    sdk = _sdk()
+    if sdk is None:
+        return
+    try:
+        rt = sdk["get_current_run_tree"]()
+        if rt is not None and tags:
+            existing = list(rt.tags or [])
+            for t in tags:
+                if t and t not in existing:
+                    existing.append(t)
+            rt.tags = existing
+    except Exception:
+        pass
+
+
+def trace_url(run_id: Optional[str]) -> Optional[str]:
+    """Return a deep-link to a run in the LangSmith UI, or None if disabled.
+
+    Constructs the URL from the cached tenant + project IDs without making
+    a network call (so it's safe to call from request hot paths).
+    """
+    if not run_id:
+        return None
+    sdk = _sdk()
+    if sdk is None:
+        return None
+    try:
+        client = sdk["client"]
+        # Cache project + tenant IDs on first call; both are O(1) afterwards.
+        if "project_id" not in _sdk_cached:
+            try:
+                proj = client.read_project(
+                    project_name=os.environ.get("LANGSMITH_PROJECT", "default")
+                )
+                _sdk_cached["project_id"] = str(proj.id)
+            except Exception:
+                _sdk_cached["project_id"] = None
+        if "tenant_id" not in _sdk_cached:
+            try:
+                _sdk_cached["tenant_id"] = client._get_optional_tenant_id()
+            except Exception:
+                _sdk_cached["tenant_id"] = None
+        proj_id = _sdk_cached.get("project_id")
+        tenant = _sdk_cached.get("tenant_id")
+        if proj_id and tenant:
+            return f"https://smith.langchain.com/o/{tenant}/projects/p/{proj_id}/r/{run_id}"
+        if proj_id:
+            return f"https://smith.langchain.com/projects/p/{proj_id}/r/{run_id}"
+        return None
+    except Exception:
+        return None

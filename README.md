@@ -171,6 +171,32 @@ Every turn composes a three-tier context for each agent:
 2. **Short-term** — last 5 messages
 3. **Document** — top-K hybrid-retrieved chunks (from `thread_files` agent)
 
+### Observability with LangSmith
+
+Every `/api/ask/stream` request is wrapped in a single root **`ask_stream`**
+trace, with nested spans for each `run_one_agent`, `score_trace`, `call_llm`,
+and `stream_llm` call. LLM spans use the OpenAI chat-completion schema so
+the UI renders messages and completions natively. Judge scores are pushed
+to the LangSmith **Feedback** tab (`agent_<name>_score` + `judge_best_score`),
+and the SSE `done` event carries `ls_run_id` + `ls_url`, so every assistant
+message in the UI links straight to its trace tree (the small **trace ↗**
+button next to the latency badge).
+
+A one-shot smoke test verifies the integration end-to-end:
+
+```bash
+cd backend
+python langsmith_smoke.py
+```
+
+Output includes the project ID, child-span breakdown by run_type, all
+feedback entries, and the deep-link URL — exactly what a code reviewer
+needs to confirm tracing is real.
+
+> **Graceful no-op:** `tracing/__init__.py` only imports `langsmith` lazily
+> when `LANGSMITH_TRACING=true`, so deployments without a key pay zero
+> overhead and zero extra dependencies at runtime.
+
 ### Semantic cache
 
 Refined answers are embedded (TF-IDF) and indexed per user. Semantically
@@ -284,6 +310,9 @@ docker-compose up --build
 | `ADMIN_PASSWORD`     | ✅       | Seeded on first start                                        |
 | `FRONTEND_URL`       | ✅       | Used for CORS                                                |
 | `TAVILY_API_KEY`     | ❌       | Enables the live web agent. Skipped if blank.                |
+| `LANGSMITH_TRACING`  | ❌       | `true` to enable LangSmith tracing                           |
+| `LANGSMITH_API_KEY`  | ❌       | Required if `LANGSMITH_TRACING=true`                         |
+| `LANGSMITH_PROJECT`  | ❌       | Project name in LangSmith (default `default`)                |
 
 `frontend/.env`:
 
@@ -355,6 +384,10 @@ Use these on your CV — every claim is backed by code in this repo.
 - **Streamed end-to-end pipeline** over Server-Sent Events — clients watch
   each agent's state, receive judge scores in real time, and consume refined
   tokens as they are generated.
+- **Production-grade observability** — every request is a root **LangSmith**
+  trace with proper OpenAI-schema LLM spans, judge scores pushed as Feedback,
+  per-agent tags for filtering, and a deep-link from every assistant message
+  in the UI back to its trace tree.
 - **Dual authentication** — JWT (email+password) + Emergent Google OAuth
   sharing a unified user model, with httpOnly cookies, bcrypt, brute-force
   lockout, and password reset tokens.
@@ -373,6 +406,17 @@ cd backend
 REACT_APP_BACKEND_URL=http://localhost:8001 \
   python -m pytest tests/ -v
 ```
+
+Want to verify LangSmith tracing is fully wired in? Run the smoke test:
+
+```bash
+cd backend
+python langsmith_smoke.py
+```
+
+It logs in, sends a fresh question, polls LangSmith for the resulting
+`ask_stream` root run + nested spans, prints the project ID, child-span
+breakdown, all feedback entries, and a deep-link URL.
 
 Current coverage:
 

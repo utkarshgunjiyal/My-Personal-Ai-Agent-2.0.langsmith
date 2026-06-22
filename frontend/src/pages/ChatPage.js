@@ -20,7 +20,8 @@ import {
   Stop,
   SpeakerHigh,
   ListBullets,
-  UploadSimple
+  UploadSimple,
+  ArrowSquareOut
 } from '@phosphor-icons/react';
 import { api, formatApiErrorDetail } from '../lib/api';
 import { streamAsk } from '../lib/sse';
@@ -332,6 +333,8 @@ export default function ChatPage() {
               scores: data.scores || [],
               best_index: typeof data.best_index === 'number' ? data.best_index : -1,
               elapsed_ms: data.elapsed_ms || 0,
+              ls_run_id: data.ls_run_id || null,
+              ls_url: data.ls_url || null,
               created_at: new Date().toISOString()
             };
             setMessages((m) => [...m, finalMsg]);
@@ -768,6 +771,19 @@ function Message({ msg, index, openTraceIndex, setOpenTraceIndex }) {
           <span className="text-[10px] font-mono text-white/40 ml-2">
             {(msg.elapsed_ms / 1000).toFixed(1)}s
           </span>
+        )}
+        {msg.ls_url && (
+          <a
+            href={msg.ls_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-2 inline-flex items-center gap-1 text-[10px] font-mono text-white/40 hover:text-agent-research transition-colors uppercase tracking-[0.18em]"
+            data-testid={`langsmith-trace-link-${index}`}
+            title="Open this run in LangSmith"
+          >
+            <ArrowSquareOut size={10} weight="bold" />
+            trace
+          </a>
         )}
         <ReadAloudButton text={msg.content} index={index} />
       </div>
