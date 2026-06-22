@@ -1,14 +1,8 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { GoogleLogo, ArrowRight } from '@phosphor-icons/react';
+import { ArrowRight } from '@phosphor-icons/react';
 import { api, formatApiErrorDetail } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
-
-function googleLogin() {
-  // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-  const redirectUrl = window.location.origin + '/app';
-  window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-}
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -71,25 +65,9 @@ export default function LoginPage() {
 
           <span className="label-eyebrow">/ sign in</span>
           <h1 className="mt-3 text-4xl font-bold tracking-tight">Access your engine.</h1>
-          <p className="mt-3 text-sm text-white/60">Use email & password or continue with Google.</p>
+          <p className="mt-3 text-sm text-white/60">Sign in with your email and password.</p>
 
-          <button
-            type="button"
-            onClick={googleLogin}
-            className="mt-8 w-full flex items-center justify-center gap-3 bg-white text-obsidian py-3 font-bold tracking-wider uppercase text-xs hover:bg-white/90 transition-colors"
-            data-testid="google-login-btn"
-          >
-            <GoogleLogo size={18} weight="bold" />
-            Continue with Google
-          </button>
-
-          <div className="my-8 flex items-center gap-4 text-[10px] tracking-[0.3em] text-white/30">
-            <span className="h-px flex-1 bg-white/10" />
-            <span>OR</span>
-            <span className="h-px flex-1 bg-white/10" />
-          </div>
-
-          <form onSubmit={submit} className="space-y-4" data-testid="login-form">
+          <form onSubmit={submit} className="mt-8 space-y-4" data-testid="login-form">
             <div>
               <label className="label-eyebrow block mb-2" htmlFor="email">Email</label>
               <input

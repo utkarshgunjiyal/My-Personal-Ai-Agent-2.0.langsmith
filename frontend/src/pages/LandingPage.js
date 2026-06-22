@@ -129,7 +129,7 @@ export default function LandingPage() {
             <div className="md:col-span-7">
               <span className="label-eyebrow">/ get started</span>
               <h2 className="mt-3 text-4xl md:text-5xl tracking-tight font-bold">
-                Sign in with Google or email. Your threads persist forever.
+                Sign in with email. Your threads persist forever.
               </h2>
             </div>
             <div className="md:col-span-5 flex md:justify-end">

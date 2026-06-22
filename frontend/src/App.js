@@ -3,7 +3,6 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
-import AuthCallback from './pages/AuthCallback';
 import ChatPage from './pages/ChatPage';
 import DashboardPage from './pages/DashboardPage';
 import { useAuth } from './context/AuthContext';
@@ -23,11 +22,6 @@ function ProtectedRoute({ children }) {
 }
 
 export default function App() {
-  const location = useLocation();
-  // Synchronous handling of OAuth fragment — see Emergent Auth playbook
-  if (location.hash?.includes('session_id=')) {
-    return <AuthCallback />;
-  }
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />

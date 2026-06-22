@@ -17,11 +17,10 @@ import io
 import logging
 import os
 import re
-import uuid
 from typing import Tuple
 
 from PIL import Image
-from emergentintegrations.llm.chat import ImageContent, LlmChat, UserMessage
+from openai import AsyncOpenAI
 
 log = logging.getLogger("uploads.extractors")
 
@@ -168,43 +167,41 @@ async def describe_image(data: bytes, mime: str, filename: str) -> dict:
     ocr_task = asyncio.to_thread(_ocr_image, pil_img)
 
     b64 = base64.b64encode(bytes_norm).decode("ascii")
-    model = os.environ.get("VISION_MODEL", "gpt-4o")
-    provider = os.environ.get("VISION_PROVIDER", "openai")
-    api_key = os.environ["EMERGENT_LLM_KEY"]
-    chat = (
-        LlmChat(
-            api_key=api_key,
-            session_id=f"vision-{uuid.uuid4().hex[:10]}",
-            system_message=(
-                "You are a vision assistant. Given an image, produce a thorough, factual "
-                "description suitable for search/retrieval. Include: (1) what the image shows "
-                "(scene, objects, people, layout), (2) any visible text transcribed verbatim, "
-                "(3) charts/tables: report data points, axes, labels. Be specific. No commentary."
-            ),
-        )
-        .with_model(provider, model)
-    )
-    image_content = ImageContent(image_base64=b64)
-    user_msg = UserMessage(
-        text=(
-            f"Filename: {filename}\n\n"
-            "Describe this image in detail and transcribe any visible text. "
-            "Return a single dense paragraph (no markdown headings)."
-        ),
-        file_contents=[image_content],
-    )
+    model = os.environ.get("VISION_MODEL", "gpt-4o-mini")
+    data_url = f"data:image/jpeg;base64,{b64}"
 
     description = ""
     try:
-        response = await chat.send_message(user_msg)
-        if isinstance(response, str):
-            description = response.strip()
-        else:
-            description = (
-                getattr(response, "text", None)
-                or getattr(response, "content", None)
-                or str(response)
-            ).strip()
+        client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a vision assistant. Given an image, produce a thorough, factual "
+                        "description suitable for search/retrieval. Include: (1) what the image shows "
+                        "(scene, objects, people, layout), (2) any visible text transcribed verbatim, "
+                        "(3) charts/tables: report data points, axes, labels. Be specific. No commentary."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Filename: {filename}\n\n"
+                                "Describe this image in detail and transcribe any visible text. "
+                                "Return a single dense paragraph (no markdown headings)."
+                            ),
+                        },
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+        )
+        description = (response.choices[0].message.content or "").strip()
     except Exception as e:
         log.exception("Vision describe failed")
         description = f"[Vision unavailable: {str(e)[:160]}]"

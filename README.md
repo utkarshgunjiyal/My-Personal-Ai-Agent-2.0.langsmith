@@ -5,7 +5,6 @@
 > intelligence (OCR + vision), persistent conversation memory, and
 > evaluator-refiner answer synthesis.
 
-[![Live Demo](https://img.shields.io/badge/▶_Live_Demo-multi--source--rag.preview.emergentagent.com-FFFFFF?style=for-the-badge&labelColor=0A0A0A)](https://multi-source-rag.preview.emergentagent.com)
 [![CI](https://img.shields.io/badge/CI-passing-34C759?style=flat-square)](.github/workflows/ci.yml)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20·%20React%20·%20MongoDB%20·%20FAISS-007AFF?style=flat-square)](.)
 [![Tests](https://img.shields.io/badge/tests-26%2F26_passing-34C759?style=flat-square)](backend/tests)
@@ -15,23 +14,12 @@
 
 ## 🎬 Try it in 30 seconds
 
-**Live demo →** [https://multi-source-rag.preview.emergentagent.com](https://multi-source-rag.preview.emergentagent.com)
-
-```
-Demo account
-  email:    admin@decision-engine.dev
-  password: admin123
-```
-
-Or click **Continue with Google** for one-click sign-in. Then:
+Run it locally (see [Quickstart](#-quickstart-local) below), then:
 
 1. **Drop a PDF / image into the chat** (drag-and-drop or paste).
 2. **Ask a question about your file.**
 3. Watch **5 agents** light up in parallel, see judge scores arrive, then the
    refined answer stream in token-by-token — grounded in your document.
-
-> 💡 **Recruiter-friendly:** No setup, no clone. Click → sign in → drop a file
-> → ask a question. The entire agentic pipeline runs end-to-end in seconds.
 
 ---
 
@@ -79,11 +67,11 @@ The engine's own self-reported performance — measured by its own judge.
 
 ![Stats dashboard](docs/screenshots/05-dashboard.png)
 
-### 5. Sign-in — JWT + one-click Google, unified user model
+### 5. Sign-in — JWT email/password auth
 ![Login screen](docs/screenshots/02-login.png)
 
 > 🔄 **Regenerate screenshots anytime:** `python scripts/capture_screenshots.py`
-> (Playwright; works against live demo or local instance).
+> (Playwright; run against your local instance).
 
 ---
 
@@ -101,19 +89,19 @@ The engine's own self-reported performance — measured by its own judge.
                                    ▼
             ┌──────────────────────────────────────────────────────┐
             │  FastAPI  (uvicorn · /api prefix · /docs)            │
-            │   ▸ JWT + Emergent Google OAuth                      │
+            │   ▸ JWT email/password auth                          │
             │   ▸ Brute-force protection · CORS                    │
             └──────────────────────┬───────────────────────────────┘
                                    │
        ┌──────────────────┬────────┴────────┬───────────────────┐
        ▼                  ▼                 ▼                   ▼
 ┌────────────────┐ ┌───────────────┐ ┌──────────────┐  ┌────────────────┐
-│ Agent pipeline │ │ Retrieval     │ │ Persistence  │  │ Emergent LLM   │
-│  ▸ cache check │ │  ▸ Global KB  │ │  ▸ MongoDB   │  │  (gpt-4.1-mini │
-│  ▸ load memory │ │    BM25+TFIDF │ │     - users  │  │   · gpt-4o     │
-│  ▸ fan-out 5   │ │  ▸ Per-thread │ │     - threads│  │   for vision)  │
-│    agents      │ │    BM25+FAISS │ │     - msgs   │  └────────────────┘
-│  ▸ LLM judge   │ │    via RRF    │ │     - chunks │
+│ Agent pipeline │ │ Retrieval     │ │ Persistence  │  │ OpenAI/        │
+│  ▸ cache check │ │  ▸ Global KB  │ │  ▸ MongoDB   │  │ OpenRouter LLM │
+│  ▸ load memory │ │    BM25+TFIDF │ │     - users  │  │  (gpt-4o-mini  │
+│  ▸ fan-out 5   │ │  ▸ Per-thread │ │     - threads│  │   · gpt-4o     │
+│    agents      │ │    BM25+FAISS │ │     - msgs   │  │   for vision)  │
+│  ▸ LLM judge   │ │    via RRF    │ │     - chunks │  └────────────────┘
 │  ▸ refiner     │ │  ▸ Web (Tavily│ │     - summary│
 │  ▸ summarize   │ │    /Brave)    │ │  ▸ FAISS     │
 │    every 10 msg│ │  ▸ arXiv      │ │    on disk   │
@@ -214,13 +202,13 @@ similar repeats (cosine ≥ 0.72) return cached answers in ~10 ms.
 ├── backend/
 │   ├── server.py              # FastAPI app, CORS, startup, /api/health
 │   ├── db.py                  # Motor client + index creation
-│   ├── auth/                  # JWT + Emergent Google OAuth
+│   ├── auth/                  # JWT email/password auth
 │   ├── agents/
 │   │   ├── graph.py           # LangGraph workflow (non-streaming)
 │   │   ├── retrieval.py       # Global KB: BM25 + TF-IDF hybrid
 │   │   ├── cache.py           # MongoDB-backed semantic cache
 │   │   ├── external.py        # Tavily + arXiv helpers
-│   │   └── llm.py             # emergentintegrations LlmChat wrapper
+│   │   └── llm.py             # OpenAI/OpenRouter chat completion wrapper
 │   ├── chat/
 │   │   ├── routes.py          # /api/threads CRUD
 │   │   └── stream.py          # /api/ask/stream (SSE) — 5-agent pipeline
@@ -267,10 +255,13 @@ similar repeats (cosine ≥ 0.72) return cached answers in ~10 ms.
 ```bash
 cd backend
 pip install -r requirements.txt
-pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
-cp ../.env.example .env   # then edit
+cp ../.env.example .env   # then edit — at minimum set MONGO_URL, JWT_SECRET, OPENAI_API_KEY
 uvicorn server:app --host 0.0.0.0 --port 8001 --reload
 ```
+
+On first boot the backend seeds an admin account from `ADMIN_EMAIL` / `ADMIN_PASSWORD`
+(set both in `.env` before running locally — there is no hardcoded default password).
+Register a normal account via `/register` for everyday testing.
 
 ### Frontend
 
@@ -294,25 +285,26 @@ docker-compose up --build
 
 `backend/.env`:
 
-| Variable             | Required | Description                                                  |
-|----------------------|----------|--------------------------------------------------------------|
-| `MONGO_URL`          | ✅       | MongoDB connection string                                    |
-| `DB_NAME`            | ✅       | Mongo database name                                          |
-| `EMERGENT_LLM_KEY`   | ✅       | Universal LLM key (OpenAI / Anthropic / Gemini compatible)   |
-| `LLM_MODEL`          | ✅       | Default text model (e.g. `gpt-4.1-mini`)                     |
-| `LLM_PROVIDER`       | ✅       | `openai` / `anthropic` / `gemini`                            |
-| `VISION_MODEL`       | ❌       | Vision model, default `gpt-4o`                               |
-| `VISION_PROVIDER`    | ❌       | Vision provider, default `openai`                            |
-| `EMBED_MODEL`        | ❌       | fastembed model, default `BAAI/bge-small-en-v1.5`            |
-| `FAISS_DIR`          | ❌       | FAISS index dir, default `/app/data/faiss`                   |
-| `JWT_SECRET`         | ✅       | Long random hex string                                       |
-| `ADMIN_EMAIL`        | ✅       | Seeded on first start                                        |
-| `ADMIN_PASSWORD`     | ✅       | Seeded on first start                                        |
-| `FRONTEND_URL`       | ✅       | Used for CORS                                                |
-| `TAVILY_API_KEY`     | ❌       | Enables the live web agent. Skipped if blank.                |
-| `LANGSMITH_TRACING`  | ❌       | `true` to enable LangSmith tracing                           |
-| `LANGSMITH_API_KEY`  | ❌       | Required if `LANGSMITH_TRACING=true`                         |
-| `LANGSMITH_PROJECT`  | ❌       | Project name in LangSmith (default `default`)                |
+| Variable                       | Required | Description                                                  |
+|--------------------------------|----------|----------------------------------------------------------------|
+| `MONGO_URL`                    | ✅       | MongoDB connection string                                    |
+| `DB_NAME`                      | ✅       | Mongo database name                                          |
+| `LLM_PROVIDER`                 | ✅       | `openai` or `openrouter`                                     |
+| `OPENAI_API_KEY`               | ✅*      | Required when `LLM_PROVIDER=openai` (and for vision describe)|
+| `OPENROUTER_API_KEY`           | ✅*      | Required when `LLM_PROVIDER=openrouter`                      |
+| `LLM_MODEL`                    | ❌       | Default text model, default `gpt-4o-mini`                    |
+| `VISION_MODEL`                 | ❌       | Vision model, default `gpt-4o-mini`                           |
+| `EMBED_MODEL`                  | ❌       | fastembed model, default `BAAI/bge-small-en-v1.5`            |
+| `FAISS_DIR`                    | ❌       | FAISS index dir, default `/app/data/faiss`                   |
+| `JWT_SECRET`                   | ✅       | Long random hex string                                       |
+| `JWT_ALGORITHM`                | ❌       | Default `HS256`                                               |
+| `ACCESS_TOKEN_EXPIRE_MINUTES`  | ❌       | Default `1440` (24h)                                          |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ❌     | If both are set, an admin account is seeded on startup       |
+| `FRONTEND_URL`                 | ✅       | Used for CORS                                                |
+| `TAVILY_API_KEY`               | ❌       | Enables the live web agent. Skipped if blank.                |
+| `LANGSMITH_TRACING`            | ❌       | `true` to enable LangSmith tracing                           |
+| `LANGSMITH_API_KEY`            | ❌       | Required if `LANGSMITH_TRACING=true`                         |
+| `LANGSMITH_PROJECT`            | ❌       | Project name in LangSmith (default `default`)                |
 
 `frontend/.env`:
 
@@ -334,8 +326,10 @@ Interactive Swagger docs at **`/docs`** when the backend is running.
 | POST   | `/api/auth/login`                     | Email + password login                            |
 | POST   | `/api/auth/logout`                    | Clears cookies                                    |
 | GET    | `/api/auth/me`                        | Current authenticated user                        |
-| POST   | `/api/auth/google/session`            | Exchange Emergent OAuth `session_id` for cookie   |
-| GET    | `/api/threads`                        | List user threads                                 |
+| POST   | `/api/auth/refresh`                   | Rotate access/refresh tokens                       |
+| POST   | `/api/auth/forgot-password`           | Issue a password reset token                       |
+| POST   | `/api/auth/reset-password`            | Consume reset token, set new password              |
+| GET    | `/api/threads`                        | List user threads                                  |
 | POST   | `/api/threads`                        | Create empty thread                               |
 | GET    | `/api/threads/{id}`                   | Get thread + messages                             |
 | DELETE | `/api/threads/{id}`                   | Delete thread + cascade (msgs, files, FAISS)      |
@@ -388,9 +382,8 @@ Use these on your CV — every claim is backed by code in this repo.
   trace with proper OpenAI-schema LLM spans, judge scores pushed as Feedback,
   per-agent tags for filtering, and a deep-link from every assistant message
   in the UI back to its trace tree.
-- **Dual authentication** — JWT (email+password) + Emergent Google OAuth
-  sharing a unified user model, with httpOnly cookies, bcrypt, brute-force
-  lockout, and password reset tokens.
+- **JWT authentication** — httpOnly cookies, bcrypt password hashing,
+  brute-force lockout, and password reset tokens.
 - **Multimodal input** at the UI layer — drag-and-drop, paste-image,
   browser-native voice STT (Web Speech API), per-message read-aloud TTS.
 - Shipped **CI** (pytest + frontend build), **Docker Compose**, **OpenAPI**

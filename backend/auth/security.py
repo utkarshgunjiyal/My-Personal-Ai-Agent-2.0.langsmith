@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 
-JWT_ALGORITHM = "HS256"
-ACCESS_TTL_MIN = 60 * 24  # 24h - longer lifetime since this is a tool app
+JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+ACCESS_TTL_MIN = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24))
 REFRESH_TTL_DAYS = 7
 
 

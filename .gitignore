@@ -6,6 +6,8 @@ __pycache__/
 node_modules/
 frontend/build/
 frontend/.cache/
+build/
+dist/
 .pytest_cache/
 .coverage
 coverage/
@@ -13,12 +15,13 @@ coverage/
 .vscode/
 *.log
 
-# Secrets / test creds — never commit these to a public repo
-/app/memory/test_credentials.md
-memory/test_credentials.md
+# Secrets — never commit these to a public repo
 .env
+.env.local
 .env.*
+!.env.example
 *.env
+!*.env.example
 credentials.json
 *.pem
 *.key
@@ -26,6 +29,11 @@ credentials.json
 
 # AI Mentor 2.0 runtime data — regenerated automatically from MongoDB
 /app/data/
-data/faiss/
+data/
+faiss_store/
 *.index
 *.ids.json
+
+# Generated test/CI artifacts and Emergent platform metadata
+test_reports/
+.emergent/
