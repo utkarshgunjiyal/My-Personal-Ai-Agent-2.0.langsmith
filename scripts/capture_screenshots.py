@@ -1,11 +1,12 @@
-"""Capture polished screenshots of the live (or local) demo for the README.
+"""Capture polished screenshots of a running instance for the README.
 
 Usage:
-    python scripts/capture_screenshots.py                       # uses live demo URL
-    python scripts/capture_screenshots.py http://localhost:3000 # local
+    python scripts/capture_screenshots.py                       # defaults to localhost
+    python scripts/capture_screenshots.py http://localhost:3000 # explicit target
 
 Requires:
     pip install playwright && playwright install chromium
+    ADMIN_EMAIL / ADMIN_PASSWORD env vars matching the target instance's seeded admin
 
 Captured (1920x1080):
     docs/screenshots/01-landing.png
@@ -23,9 +24,9 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 
-DEFAULT_URL = "https://career-showcase-511.emergent.host"
-EMAIL = "admin@decision-engine.dev"
-PASSWORD = "admin123"
+DEFAULT_URL = "http://localhost:3000"
+EMAIL = os.environ.get("ADMIN_EMAIL", "")
+PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "screenshots"
 OUT.mkdir(parents=True, exist_ok=True)

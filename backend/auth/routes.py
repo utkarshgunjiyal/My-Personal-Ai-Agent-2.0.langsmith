@@ -1,10 +1,9 @@
-"""Auth routes - JWT email/password + Emergent Google session."""
+"""Auth routes - JWT email/password authentication."""
 import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 
@@ -20,9 +19,6 @@ from db import get_db
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-EMERGENT_SESSION_DATA_URL = (
-    "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
-)
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
@@ -70,20 +66,8 @@ def _set_jwt_cookies(response: Response, access: str, refresh: str):
     )
 
 
-def _set_session_cookie(response: Response, token: str, max_age: int):
-    response.set_cookie(
-        key="session_token",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=max_age,
-        path="/",
-    )
-
-
 def _clear_cookies(response: Response):
-    for name in ("access_token", "refresh_token", "session_token"):
+    for name in ("access_token", "refresh_token"):
         response.delete_cookie(name, path="/")
 
 
@@ -180,11 +164,7 @@ async def login(body: LoginIn, request: Request, response: Response):
 
 
 @router.post("/logout")
-async def logout(request: Request, response: Response):
-    db = get_db()
-    session_token = request.cookies.get("session_token")
-    if session_token:
-        await db.user_sessions.delete_one({"session_token": session_token})
+async def logout(response: Response):
     _clear_cookies(response)
     return {"ok": True}
 
@@ -256,82 +236,17 @@ async def reset_password(body: ResetPasswordIn):
     return {"ok": True}
 
 
-# --------- Emergent Google session exchange ---------
-class GoogleSessionIn(BaseModel):
-    session_id: str
-
-
-@router.post("/google/session")
-async def google_session(body: GoogleSessionIn, response: Response):
-    """
-    Exchanges an Emergent session_id (received in URL fragment from auth.emergentagent.com)
-    for a long-lived session_token, creates/updates the user in MongoDB, and sets cookie.
-    """
-    async with httpx.AsyncClient(timeout=20) as client:
-        try:
-            r = await client.get(
-                EMERGENT_SESSION_DATA_URL,
-                headers={"X-Session-ID": body.session_id},
-            )
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Auth provider error: {e}")
-    if r.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid session id")
-    data = r.json()
-    email = (data.get("email") or "").lower().strip()
-    if not email:
-        raise HTTPException(status_code=400, detail="Email missing from provider")
-
-    db = get_db()
-    existing = await db.users.find_one({"email": email})
-    if existing:
-        await db.users.update_one(
-            {"user_id": existing["user_id"]},
-            {
-                "$set": {
-                    "name": data.get("name") or existing.get("name"),
-                    "picture": data.get("picture") or existing.get("picture"),
-                    "auth_provider": existing.get("auth_provider", "google"),
-                }
-            },
-        )
-        user_id = existing["user_id"]
-    else:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one(
-            {
-                "user_id": user_id,
-                "email": email,
-                "name": data.get("name") or email.split("@")[0],
-                "picture": data.get("picture"),
-                "role": "user",
-                "auth_provider": "google",
-                "created_at": datetime.now(timezone.utc),
-            }
-        )
-
-    session_token = data["session_token"]
-    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    await db.user_sessions.insert_one(
-        {
-            "user_id": user_id,
-            "session_token": session_token,
-            "expires_at": expires_at,
-            "created_at": datetime.now(timezone.utc),
-        }
-    )
-    _set_session_cookie(response, session_token, max_age=60 * 60 * 24 * 7)
-    user = await db.users.find_one(
-        {"user_id": user_id}, {"_id": 0, "password_hash": 0}
-    )
-    return user
-
-
 # --------- Admin seed ---------
 async def seed_admin():
+    """Seed an admin user from ADMIN_EMAIL/ADMIN_PASSWORD. No-op if either is unset,
+    so a missing .env entry can't silently create a known-password admin account."""
+    admin_email = os.environ.get("ADMIN_EMAIL")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    if not admin_email or not admin_password:
+        return
+    admin_email = admin_email.lower()
+
     db = get_db()
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@decision-engine.dev").lower()
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     existing = await db.users.find_one({"email": admin_email})
     if existing is None:
         user_id = f"user_{uuid.uuid4().hex[:12]}"

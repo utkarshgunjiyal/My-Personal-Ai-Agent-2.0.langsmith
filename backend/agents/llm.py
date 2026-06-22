@@ -1,4 +1,8 @@
-"""LLM wrapper around emergentintegrations.LlmChat for use across agents.
+"""Thin async wrapper around the OpenAI-compatible chat completions API.
+
+Supports both OpenAI and OpenRouter by swapping the base URL + key — both
+expose the same wire format, so the rest of the codebase only ever talks
+to `call_llm` / `stream_llm` and never touches the provider SDK directly.
 
 LangSmith integration notes
 ---------------------------
@@ -12,31 +16,26 @@ codebase, but what gets serialized into LangSmith follows the schema the
 trace UI knows how to render.
 """
 import os
-import uuid
 from typing import Any, AsyncIterator
 
-from emergentintegrations.llm.chat import LlmChat, TextDelta, UserMessage
+from openai import AsyncOpenAI
 
 from tracing import traceable
 
-
 DEFAULT_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
-DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-4.1-mini")
+DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+
+_PROVIDER_BASE_URLS = {
+    "openai": None,  # use the SDK default
+    "openrouter": "https://openrouter.ai/api/v1",
+}
 
 
-def _key() -> str:
-    return os.environ["EMERGENT_LLM_KEY"]
-
-
-def _new_chat(system_message: str, session_id: str | None = None, provider: str | None = None, model: str | None = None) -> LlmChat:
-    return (
-        LlmChat(
-            api_key=_key(),
-            session_id=session_id or f"agent-{uuid.uuid4().hex[:10]}",
-            system_message=system_message,
-        )
-        .with_model(provider or DEFAULT_PROVIDER, model or DEFAULT_MODEL)
-    )
+def _client(provider: str | None = None) -> AsyncOpenAI:
+    provider = provider or DEFAULT_PROVIDER
+    if provider == "openrouter":
+        return AsyncOpenAI(api_key=os.environ["OPENROUTER_API_KEY"], base_url=_PROVIDER_BASE_URLS["openrouter"])
+    return AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 # --- LangSmith I/O shapers (OpenAI chat-completion schema) -------------------
@@ -73,9 +72,8 @@ def _llm_outputs(output: Any) -> dict[str, Any]:
             }
         ],
         # Best-effort token usage so LangSmith can show "tokens" stats.
-        # Replaced with real counts when the provider returns them.
         "usage": {
-            "prompt_tokens": None,  # filled per-run via metadata if available
+            "prompt_tokens": None,
             "completion_tokens": _approx_token_count(text),
             "total_tokens": None,
         },
@@ -98,12 +96,15 @@ async def call_llm(
     model: str | None = None,
 ) -> str:
     """One-shot call: send a single user message with a system message and return the text."""
-    chat = _new_chat(system_message, session_id, provider, model)
-    response = await chat.send_message(UserMessage(text=user_text))
-    if isinstance(response, str):
-        return response.strip()
-    text = getattr(response, "text", None) or getattr(response, "content", None)
-    return (text or str(response)).strip()
+    client = _client(provider)
+    response = await client.chat.completions.create(
+        model=model or DEFAULT_MODEL,
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_text},
+        ],
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 def _concat_chunks(chunks):
@@ -128,7 +129,16 @@ async def stream_llm(
     model: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream tokens for a single call. Yields only the delta text chunks."""
-    chat = _new_chat(system_message, session_id, provider, model)
-    async for event in chat.stream_message(UserMessage(text=user_text)):
-        if isinstance(event, TextDelta) and event.content:
-            yield event.content
+    client = _client(provider)
+    stream = await client.chat.completions.create(
+        model=model or DEFAULT_MODEL,
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_text},
+        ],
+        stream=True,
+    )
+    async for chunk in stream:
+        delta = chunk.choices[0].delta.content if chunk.choices else None
+        if delta:
+            yield delta
