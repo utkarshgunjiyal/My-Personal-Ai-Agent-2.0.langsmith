@@ -19,10 +19,38 @@ from rank_bm25 import BM25Okapi
 
 import vectorstore
 
+from tracing import traceable
+
 log = logging.getLogger("uploads.retriever")
 
 # RRF constant — k=60 is standard
 RRF_K = 60
+
+
+def _thread_docs_inputs(inputs: dict) -> dict:
+    """Strip the db handle; keep the retrieval params."""
+    return {
+        "thread_id": inputs.get("thread_id"),
+        "user_id": inputs.get("user_id"),
+        "query": inputs.get("query"),
+        "top_k": inputs.get("top_k"),
+    }
+
+
+def _thread_docs_outputs(output) -> dict:
+    docs = output or []
+    return {
+        "count": len(docs),
+        "results": [
+            {
+                "filename": d.filename,
+                "page": d.page,
+                "score": round(float(d.score), 4),
+                "preview": d.content[:160],
+            }
+            for d in docs
+        ],
+    }
 
 
 @dataclass
@@ -41,6 +69,12 @@ def _tokenize(s: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", s.lower())
 
 
+@traceable(
+    run_type="retriever",
+    name="thread_docs_rrf",
+    process_inputs=_thread_docs_inputs,
+    process_outputs=_thread_docs_outputs,
+)
 async def retrieve_thread_docs(
     db, *, thread_id: str, user_id: str, query: str, top_k: int = 5
 ) -> List[UserDoc]:

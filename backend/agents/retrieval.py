@@ -12,6 +12,28 @@ from rank_bm25 import BM25Okapi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from tracing import traceable
+
+
+def _kb_inputs(inputs: dict) -> dict:
+    """Strip `self`; keep the query + retrieval knobs."""
+    return {
+        "query": inputs.get("query"),
+        "alpha": inputs.get("alpha"),
+        "top_k": inputs.get("top_k"),
+    }
+
+
+def _kb_outputs(output) -> dict:
+    docs = output or []
+    return {
+        "count": len(docs),
+        "results": [
+            {"score": round(float(d.score), 4), "preview": d.content[:160]}
+            for d in docs
+        ],
+    }
+
 # A small built-in technical knowledge base — extended beyond original 6 docs
 KNOWLEDGE_BASE: list[str] = [
     "LangGraph is a framework for building stateful, multi-actor AI applications with LLMs. "
@@ -71,6 +93,12 @@ class HybridRetriever:
         self.vectorizer = TfidfVectorizer(stop_words="english")
         self.tfidf_matrix = self.vectorizer.fit_transform(self.docs)
 
+    @traceable(
+        run_type="retriever",
+        name="kb_hybrid_search",
+        process_inputs=_kb_inputs,
+        process_outputs=_kb_outputs,
+    )
     def search(self, query: str, alpha: float = 0.6, top_k: int = 3) -> list[RetrievedDoc]:
         # Sparse
         sparse_raw = self.bm25.get_scores(_tokenize(query))
