@@ -16,9 +16,72 @@ from agents.cache import SemanticCache
 from agents.external import arxiv_search_context, tavily_search_context
 from agents.llm import call_llm
 from agents.retrieval import HybridRetriever
+from tracing import (
+    add_current_tags,
+    add_feedback,
+    current_run_id,
+    set_current_outputs,
+    trace_root,
+    trace_url,
+    traceable,
+    update_current_metadata,
+)
 
 # Global stateless retriever (KB is static)
 retriever = HybridRetriever()
+
+
+# --- LangSmith I/O shapers ---------------------------------------------------
+# The graph state carries non-serializable objects (motor db handle, the
+# SemanticCache with numpy matrices). These shapers project each node's
+# inputs/outputs down to a small, JSON-safe view so the trace stays readable.
+def _safe_state(d) -> dict:
+    if not isinstance(d, dict):
+        return {"value": str(d)[:200]}
+    out: dict = {}
+    for k in (
+        "question",
+        "user_id",
+        "thread_id",
+        "cache_hit",
+        "cache_similarity",
+        "cached_question",
+        "scores",
+        "best_index",
+        "elapsed_ms",
+    ):
+        if k in d:
+            out[k] = d[k]
+    if d.get("best_answer"):
+        out["best_answer"] = str(d["best_answer"])[:300]
+    if d.get("final_answer"):
+        out["final_answer"] = str(d["final_answer"])[:300]
+    if isinstance(d.get("traces"), list):
+        out["agent_count"] = len(d["traces"])
+    return out
+
+
+def _agent_inputs(inputs: dict) -> dict:
+    return {
+        "name": inputs.get("name"),
+        "system": (inputs.get("system") or "")[:200],
+        "prompt": (inputs.get("prompt") or "")[:500],
+    }
+
+
+def _agent_outputs(output) -> dict:
+    if not isinstance(output, dict):
+        return {"value": str(output)[:200]}
+    return {
+        "name": output.get("name"),
+        "elapsed_ms": output.get("elapsed_ms"),
+        "answer": (output.get("answer") or "")[:500],
+    }
+
+
+def _judge_inputs(inputs: dict) -> dict:
+    t = inputs.get("trace") or {}
+    return {"agent": t.get("name"), "answer": (t.get("answer") or "")[:500]}
 
 
 class AgentTrace(TypedDict):
@@ -58,10 +121,18 @@ AGENT_META = [
 
 
 # ---------- Nodes ----------
+@traceable(
+    run_type="chain",
+    name="check_cache",
+    process_inputs=_safe_state,
+    process_outputs=_safe_state,
+)
 async def check_cache(state: EngineState) -> EngineState:
     cache: SemanticCache = state["cache"]
     hit = cache.search(state["question"])
     if hit:
+        add_current_tags("cache_hit")
+        update_current_metadata(cache_similarity=float(hit["similarity"]))
         state["final_answer"] = hit["answer"]
         state["cache_hit"] = True
         state["cache_similarity"] = hit["similarity"]
@@ -76,7 +147,16 @@ async def check_cache(state: EngineState) -> EngineState:
     return state
 
 
+@traceable(
+    run_type="chain",
+    name="agent",
+    tags=["agent"],
+    process_inputs=_agent_inputs,
+    process_outputs=_agent_outputs,
+)
 async def _run_agent(name: str, color: str, system: str, prompt: str, context: str) -> AgentTrace:
+    add_current_tags(f"agent:{name}")
+    update_current_metadata(agent_name=name)
     started = time.perf_counter()
     try:
         answer = await call_llm(system, prompt)
@@ -102,6 +182,12 @@ async def _run_agent(name: str, color: str, system: str, prompt: str, context: s
     )
 
 
+@traceable(
+    run_type="chain",
+    name="run_agents",
+    process_inputs=_safe_state,
+    process_outputs=_safe_state,
+)
 async def run_agents(state: EngineState) -> EngineState:
     """Fan-out all 4 agents concurrently for speed."""
     question = state["question"]
@@ -185,6 +271,12 @@ def _is_error_trace(t: AgentTrace) -> bool:
     return a.startswith("[") and ("error" in a.lower() or "unavailable" in a.lower() or "rate-limited" in a.lower())
 
 
+@traceable(
+    run_type="chain",
+    name="evaluate",
+    process_inputs=_safe_state,
+    process_outputs=_safe_state,
+)
 async def evaluate(state: EngineState) -> EngineState:
     """LLM-as-judge: score each agent's answer 0-10."""
     question = state["question"]
@@ -197,7 +289,9 @@ async def evaluate(state: EngineState) -> EngineState:
         "Reply with ONLY a single number between 0 and 10. No other text."
     )
 
+    @traceable(run_type="chain", name="judge_score", tags=["judge"], process_inputs=_judge_inputs)
     async def score_one(trace: AgentTrace) -> float:
+        update_current_metadata(agent_name=trace.get("name"))
         if _is_error_trace(trace):
             return 0.0
         prompt = f"Question:\n{question}\n\nAnswer:\n{trace['answer']}"
@@ -224,6 +318,12 @@ async def evaluate(state: EngineState) -> EngineState:
     return state
 
 
+@traceable(
+    run_type="chain",
+    name="refine",
+    process_inputs=_safe_state,
+    process_outputs=_safe_state,
+)
 async def refine(state: EngineState) -> EngineState:
     state["final_answer"] = await _safe_refine(
         state["question"], state["traces"], state["best_answer"]
@@ -258,6 +358,12 @@ async def _safe_refine(question: str, traces: list[AgentTrace], best_answer: str
         return f"[Engine temporarily unavailable: {str(e)[:200]}]"
 
 
+@traceable(
+    run_type="chain",
+    name="write_cache",
+    process_inputs=_safe_state,
+    process_outputs=_safe_state,
+)
 async def write_cache(state: EngineState) -> EngineState:
     cache: SemanticCache = state["cache"]
     db = state["db"]
@@ -308,6 +414,56 @@ async def run_engine(*, question: str, user_id: str, thread_id: str, cache: Sema
         "started_at": time.perf_counter(),
     }
     started = time.perf_counter()
-    result = await engine_graph.ainvoke(state)
-    result["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
+
+    # Root trace for the entire non-streaming engine run. Every @traceable
+    # node (check_cache, run_agents, agents, judge, refine, write_cache) plus
+    # the retriever / cache / external-tool spans attach as children.
+    async with trace_root(
+        name="ask_engine",
+        run_type="chain",
+        inputs={"question": question, "thread_id": thread_id},
+        metadata={"user_id": user_id, "thread_id": thread_id},
+        tags=["ask_engine", "api", "non_streaming"],
+    ):
+        root_run_id = current_run_id()
+        result = await engine_graph.ainvoke(state)
+        result["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
+
+        scores = result.get("scores", []) or []
+        best_idx = result.get("best_index", -1)
+        best_score = float(scores[best_idx]) if scores and 0 <= best_idx < len(scores) else None
+        best_agent = (
+            result["traces"][best_idx]["name"]
+            if result.get("traces") and 0 <= best_idx < len(result["traces"])
+            else ("cache" if result.get("cache_hit") else None)
+        )
+
+        update_current_metadata(
+            cache_hit=bool(result.get("cache_hit")),
+            cache_similarity=float(result.get("cache_similarity", 0.0)),
+            best_index=best_idx,
+            best_agent=best_agent,
+            best_score=best_score,
+        )
+        set_current_outputs(
+            {
+                "final_answer": (result.get("final_answer") or "")[:1000],
+                "cache_hit": bool(result.get("cache_hit")),
+                "best_agent": best_agent,
+                "best_score": best_score,
+                "scores": [float(s) for s in scores],
+                "best_index": best_idx,
+            }
+        )
+        if root_run_id and best_score is not None:
+            add_feedback(
+                root_run_id,
+                "judge_best_score",
+                score=best_score,
+                comment=f"best agent: {best_agent}" if best_agent else None,
+            )
+
+        result["ls_run_id"] = root_run_id
+        result["ls_url"] = trace_url(root_run_id)
+
     return result

@@ -9,6 +9,22 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from tracing import traceable
+
+
+def _cache_inputs(inputs: dict) -> dict:
+    return {"question": inputs.get("question")}
+
+
+def _cache_outputs(output) -> dict:
+    if not output:
+        return {"hit": False}
+    return {
+        "hit": True,
+        "similarity": round(float(output.get("similarity", 0.0)), 4),
+        "matched_question": output.get("matched_question"),
+    }
+
 
 class SemanticCache:
     """A per-process semantic cache, hydrated from the `semantic_cache` collection."""
@@ -33,6 +49,12 @@ class SemanticCache:
         self.entries = [{"question": d["question"], "answer": d["answer"]} for d in docs]
         self._refit()
 
+    @traceable(
+        run_type="retriever",
+        name="semantic_cache_lookup",
+        process_inputs=_cache_inputs,
+        process_outputs=_cache_outputs,
+    )
     def search(self, question: str) -> dict | None:
         if not self.entries or self.vectorizer is None:
             return None

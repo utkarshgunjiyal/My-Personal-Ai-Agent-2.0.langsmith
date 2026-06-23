@@ -6,7 +6,41 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import arxiv
 from tavily import TavilyClient
 
+from tracing import traceable
+
 _TIMEOUT_SECONDS = 8  # hard cap per external agent — must be short to keep /ask responsive
+
+# --- LangSmith I/O shapers ---------------------------------------------------
+_PREVIEW_CHARS = 400
+
+
+def _tool_inputs(inputs: dict) -> dict:
+    """Drop internals; keep just the query + result cap for the trace UI."""
+    return {"query": inputs.get("query"), "max_results": inputs.get("max_results")}
+
+
+def _external_status(text: str) -> str:
+    """Classify the sentinel strings these helpers return so traces are filterable."""
+    t = (text or "").strip()
+    low = t.lower()
+    if t.startswith("[") and "disabled" in low:
+        return "disabled"
+    if t.startswith("[") and "timed out" in low:
+        return "timeout"
+    if t.startswith("[") and "error" in low:
+        return "error"
+    if t.startswith("[No "):
+        return "empty"
+    return "ok"
+
+
+def _tool_outputs(output) -> dict:
+    text = output if isinstance(output, str) else str(output or "")
+    return {
+        "status": _external_status(text),
+        "chars": len(text),
+        "preview": text[:_PREVIEW_CHARS],
+    }
 
 
 def _with_timeout(fn, *args, timeout: float = _TIMEOUT_SECONDS, **kwargs):
@@ -35,6 +69,12 @@ def _tavily_search_blocking(query: str, max_results: int) -> str:
     )
 
 
+@traceable(
+    run_type="tool",
+    name="tavily_search",
+    process_inputs=_tool_inputs,
+    process_outputs=_tool_outputs,
+)
 def tavily_search_context(query: str, max_results: int = 3) -> str:
     try:
         return _with_timeout(_tavily_search_blocking, query, max_results, timeout=_TIMEOUT_SECONDS)
@@ -58,6 +98,12 @@ def _arxiv_search_blocking(query: str, max_results: int) -> str:
     )
 
 
+@traceable(
+    run_type="tool",
+    name="arxiv_search",
+    process_inputs=_tool_inputs,
+    process_outputs=_tool_outputs,
+)
 def arxiv_search_context(query: str, max_results: int = 3) -> str:
     try:
         return _with_timeout(_arxiv_search_blocking, query, max_results, timeout=_TIMEOUT_SECONDS)

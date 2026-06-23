@@ -175,6 +175,8 @@ async def ask(body: AskIn, user=Depends(get_current_user)):
         "scores": result.get("scores", []),
         "best_index": result.get("best_index", -1),
         "elapsed_ms": elapsed_ms,
+        "ls_run_id": result.get("ls_run_id"),
+        "ls_url": result.get("ls_url"),
         "created_at": datetime.now(timezone.utc),
     }
     await db.messages.insert_one(asst_doc)
