@@ -1,13 +1,13 @@
-"""Regression tests for iteration-4 CRITICAL bugs (judge mis-score + cache pollution).
+"""Regression tests for upload grounding and repeat-question behavior.
 
-Covers the spec from /app/test_reports/iteration_5 review_request:
+Covers:
   1) Upload-grounded answer regression: token must appear in final_answer,
-     judge_scores.best_index must point to local_retrieval, uploads_used emitted.
-  2) Semantic-cache must be skipped when thread has uploads. Repeating the same
-     question on an upload thread should run the engine twice (cache_hit=false).
-  3) Cross-thread cache isolation: an upload-bearing thread must not be served
-     the cached answer from a no-upload thread.
-  4) Existing /api/ask/stream without uploads still caches (miss then hit).
+     judge_scores.best_index must point to thread_files, uploads_used emitted.
+  2) Repeating the same question on an upload thread must run the engine
+     again and stay grounded in the uploaded content.
+  3) The semantic cache was removed (it produced false hits on merely-similar
+     questions): repeating an identical question on a no-upload thread must
+     also re-run the full agent pipeline instead of returning a canned answer.
 """
 import io
 import json
@@ -85,7 +85,7 @@ def _get_all_events(events, name):
 # ------------------------- Tests -------------------------
 class TestUploadGroundedAnswer:
     """Regression #1: token-grounded answer must surface in final_answer +
-    judge picks local_retrieval + uploads_used emitted."""
+    judge picks thread_files + uploads_used emitted."""
 
     def test_token_in_final_answer_and_best_index_is_local(self, session):
         # Upload a unique-token file on a fresh thread
@@ -135,7 +135,6 @@ class TestUploadGroundedAnswer:
         # allow any separators between segments)
         done = _get_event(events, "done")
         assert done is not None, "done event missing"
-        assert done.get("cache_hit") is False
         final = done.get("final_answer", "") or ""
         # token has form X-Y-Z; check loosely
         parts = unique_token.split("-")
@@ -145,12 +144,11 @@ class TestUploadGroundedAnswer:
         )
 
 
-class TestCacheSkippedOnUploadThread:
-    """Regression #2: when thread has uploads, cache lookup MUST be skipped
-    on every request, and cache.add() MUST be skipped, so repeated identical
-    questions still run the engine."""
+class TestRepeatQuestionOnUploadThread:
+    """Regression #2: repeating an identical question on an upload thread
+    must run the engine again and stay grounded in the uploaded content."""
 
-    def test_repeat_question_does_not_cache_on_upload_thread(self, session):
+    def test_repeat_question_stays_grounded(self, session):
         unique_token = f"NEBULA-OMEGA-{uuid.uuid4().hex[:6].upper()}"
         content = f"Codename {unique_token}. It has three modes.".encode()
         files = {"file": (f"codename_{uuid.uuid4().hex[:6]}.txt", content, "text/plain")}
@@ -162,21 +160,16 @@ class TestCacheSkippedOnUploadThread:
 
         # First run
         ev1 = _stream_ask(session, q, thread_id)
-        cc1 = _get_event(ev1, "cache_check")
         done1 = _get_event(ev1, "done")
-        assert cc1 is not None and cc1.get("hit") is False, f"cache_check1={cc1}"
-        assert done1 is not None and done1.get("cache_hit") is False
+        assert done1 is not None
         assert "uploads_used" in [e for e, _ in ev1]
 
-        # Second run — same thread, same question; must STILL not hit cache
+        # Second run — same thread, same question; must run the engine again
         ev2 = _stream_ask(session, q, thread_id)
-        cc2 = _get_event(ev2, "cache_check")
         done2 = _get_event(ev2, "done")
-        assert cc2 is not None and cc2.get("hit") is False, (
-            f"cache should be skipped on upload thread, got cache_check={cc2}"
-        )
-        assert done2 is not None and done2.get("cache_hit") is False, (
-            f"done.cache_hit must be false on upload thread; got {done2}"
+        assert done2 is not None
+        assert "agent_start" in [e for e, _ in ev2], (
+            "repeat question must re-run the agents"
         )
         assert "uploads_used" in [e for e, _ in ev2]
         # And the second answer must still be grounded
@@ -188,70 +181,30 @@ class TestCacheSkippedOnUploadThread:
         )
 
 
-class TestCrossThreadCacheIsolation:
-    """Regression #3: thread A (no uploads) caches its answer; thread B (with
-    uploads) asking the SAME question must NOT be served the cached answer."""
+class TestRepeatQuestionAlwaysRunsEngine:
+    """Regression #3: with the semantic cache removed, an identical repeat
+    question (no uploads) must re-run the full pipeline — agents, judge and
+    refiner all fire on both runs."""
 
-    def test_upload_thread_does_not_consume_cache_from_no_upload_thread(self, session):
-        question = "What is RAG in the context of large language models?"
-
-        # Thread A: no uploads (new thread, auto-created)
-        evA = _stream_ask(session, question)
-        # Run again on the same thread to confirm cache works there
-        threadA = _get_event(evA, "thread")["thread_id"]
-        evA2 = _stream_ask(session, question, threadA)
-        _get_event(evA2, "cache_check")
-        # cache may or may not hit depending on semantic threshold; we don't
-        # strictly require it. We only require that thread B is NOT served the
-        # cached answer.
-
-        # Thread B: upload a file whose content is DIFFERENT
-        unique_token = f"HELIOS-{uuid.uuid4().hex[:6].upper()}"
-        content = (
-            f"This file is about acronym {unique_token}. Nothing to do with retrieval-augmented "
-            "generation."
-        ).encode()
-        files = {"file": (f"helios_{uuid.uuid4().hex[:6]}.txt", content, "text/plain")}
-        r = session.post(f"{BASE_URL}/api/uploads", files=files, timeout=60)
-        assert r.status_code == 200
-        threadB = r.json()["thread_id"]
-
-        evB = _stream_ask(session, question, threadB)
-        ccB = _get_event(evB, "cache_check")
-        doneB = _get_event(evB, "done")
-        assert ccB is not None and ccB.get("hit") is False, (
-            f"thread B (with uploads) must skip cache; got {ccB}"
-        )
-        assert doneB is not None and doneB.get("cache_hit") is False
-        assert "uploads_used" in [e for e, _ in evB]
-
-
-class TestStreamWithoutUploadsCachesNormally:
-    """Regression #4: existing flow without uploads — first run miss, second
-    identical question on the same user should be cache_hit=true."""
-
-    def test_no_uploads_cache_miss_then_hit(self, session):
-        # Use a sufficiently unique question template so it doesn't semantically
-        # match anything else in the per-user cache.
+    def test_repeat_question_runs_engine_twice(self, session):
         marker = uuid.uuid4().hex[:8]
         question = (
             f"Pretend ZX-{marker} is a fictional sorting algorithm I just invented. "
             "Give it a one-sentence definition."
         )
         ev1 = _stream_ask(session, question)
-        cc1 = _get_event(ev1, "cache_check")
         done1 = _get_event(ev1, "done")
-        assert cc1 is not None and cc1.get("hit") is False, (
-            f"first call should miss cache; got {cc1}"
-        )
-        assert done1 is not None and done1.get("cache_hit") is False
+        assert done1 is not None
+        assert "agent_start" in [e for e, _ in ev1]
 
-        # Repeat on a fresh thread (no uploads anywhere); should serve from cache
+        # Repeat on a fresh thread — must run the engine again, never a
+        # canned answer.
         ev2 = _stream_ask(session, question)
-        cc2 = _get_event(ev2, "cache_check")
         done2 = _get_event(ev2, "done")
-        # SemanticCache threshold = 0.72; exact-question repeat should hit
-        assert cc2 is not None and cc2.get("hit") is True, (
-            f"expected cache hit on identical question; got {cc2}"
-        )
-        assert done2 is not None and done2.get("cache_hit") is True
+        assert done2 is not None
+        ev2_names = [e for e, _ in ev2]
+        for required in ("agent_start", "agent_complete", "judge_scores", "refine_token"):
+            assert required in ev2_names, (
+                f"repeat question must emit {required}; got {ev2_names}"
+            )
+        assert done2.get("final_answer")

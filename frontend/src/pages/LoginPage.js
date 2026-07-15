@@ -49,7 +49,7 @@ export default function LoginPage() {
               Four agents. One refined answer. Every conversation persists.
             </p>
             <p className="mt-6 font-mono text-[11px] text-white/50 max-w-sm">
-              LANGGRAPH · LLM-AS-JUDGE · HYBRID RETRIEVAL · SEMANTIC CACHE
+              LANGGRAPH · LLM-AS-JUDGE · HYBRID RETRIEVAL · PERSISTENT THREADS
             </p>
           </div>
         </div>

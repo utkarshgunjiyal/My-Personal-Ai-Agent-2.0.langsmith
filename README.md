@@ -62,7 +62,7 @@ The highest-scoring agent gets a `BEST` badge. The refiner picks from here.
 
 ![Agent trace panel](docs/screenshots/04-trace.png)
 
-### 4. Stats dashboard — per-agent leaderboard, cache hit rate, recent runs
+### 4. Stats dashboard — per-agent leaderboard, latency, recent runs
 The engine's own self-reported performance — measured by its own judge.
 
 ![Stats dashboard](docs/screenshots/05-dashboard.png)
@@ -97,14 +97,14 @@ The engine's own self-reported performance — measured by its own judge.
        ▼                  ▼                 ▼                   ▼
 ┌────────────────┐ ┌───────────────┐ ┌──────────────┐  ┌────────────────┐
 │ Agent pipeline │ │ Retrieval     │ │ Persistence  │  │ OpenAI/        │
-│  ▸ cache check │ │  ▸ Global KB  │ │  ▸ MongoDB   │  │ OpenRouter LLM │
-│  ▸ load memory │ │    BM25+TFIDF │ │     - users  │  │  (gpt-4o-mini  │
-│  ▸ fan-out 5   │ │  ▸ Per-thread │ │     - threads│  │   · gpt-4o     │
-│    agents      │ │    BM25+FAISS │ │     - msgs   │  │   for vision)  │
-│  ▸ LLM judge   │ │    via RRF    │ │     - chunks │  └────────────────┘
-│  ▸ refiner     │ │  ▸ Web (Tavily│ │     - summary│
-│  ▸ summarize   │ │    /Brave)    │ │  ▸ FAISS     │
-│    every 10 msg│ │  ▸ arXiv      │ │    on disk   │
+│  ▸ load memory │ │  ▸ Global KB  │ │  ▸ MongoDB   │  │ OpenRouter LLM │
+│  ▸ fan-out 5   │ │    BM25+TFIDF │ │     - users  │  │  (gpt-4o-mini  │
+│    agents      │ │  ▸ Per-thread │ │     - threads│  │   · gpt-4o     │
+│  ▸ LLM judge   │ │    BM25+FAISS │ │     - msgs   │  │   for vision)  │
+│  ▸ refiner     │ │    via RRF    │ │     - chunks │  └────────────────┘
+│  ▸ summarize   │ │  ▸ Web (Tavily│ │     - summary│
+│    every 10 msg│ │    /Brave)    │ │  ▸ FAISS     │
+│                │ │  ▸ arXiv      │ │    on disk   │
 └────────────────┘ └───────────────┘ └──────────────┘
 ```
 
@@ -155,7 +155,7 @@ upload  │  PDF  ─►  pypdf text per page                       │
 Every turn composes a three-tier context for each agent:
 
 1. **Long-term** — rolling LLM summary (regenerated every 10 messages,
-   delta-counter ensures boundaries aren't skipped through cache hits)
+   delta-counter ensures boundaries aren't skipped)
 2. **Short-term** — last 5 messages
 3. **Document** — top-K hybrid-retrieved chunks (from `thread_files` agent)
 
@@ -185,14 +185,6 @@ needs to confirm tracing is real.
 > when `LANGSMITH_TRACING=true`, so deployments without a key pay zero
 > overhead and zero extra dependencies at runtime.
 
-### Semantic cache
-
-Refined answers are embedded (TF-IDF) and indexed per user. Semantically
-similar repeats (cosine ≥ 0.72) return cached answers in ~10 ms.
-
-> ⚙️ **Cache is skipped when the thread has uploads** — grounded answers are
-> per-thread by nature and must not pollute cross-thread cache.
-
 ---
 
 ## 📦 Project structure
@@ -206,7 +198,6 @@ similar repeats (cosine ≥ 0.72) return cached answers in ~10 ms.
 │   ├── agents/
 │   │   ├── graph.py           # LangGraph workflow (non-streaming)
 │   │   ├── retrieval.py       # Global KB: BM25 + TF-IDF hybrid
-│   │   ├── cache.py           # MongoDB-backed semantic cache
 │   │   ├── external.py        # Tavily + arXiv helpers
 │   │   └── llm.py             # OpenAI/OpenRouter chat completion wrapper
 │   ├── chat/
@@ -347,7 +338,6 @@ Interactive Swagger docs at **`/docs`** when the backend is running.
 | Event             | Payload                                                 |
 |-------------------|---------------------------------------------------------|
 | `thread`          | `{thread_id, is_new}`                                   |
-| `cache_check`     | `{hit, similarity?, matched_question?, answer?}`        |
 | `memory_loaded`   | `{has_summary, recent_messages}`                        |
 | `uploads_used`    | `{file_count, matched_chunks}`                          |
 | `agent_start`     | `{index, name, color}`                                  |
@@ -365,7 +355,7 @@ Use these on your CV — every claim is backed by code in this repo.
 
 - Designed and built an **agentic AI mentor platform** (FastAPI · React ·
   MongoDB · FAISS · LangGraph) with **5 parallel agents**, LLM-as-a-judge
-  evaluation, answer refinement, and a persistent semantic cache.
+  evaluation, and answer refinement.
 - Implemented **per-thread document intelligence** — PDF (native + OCR via
   Tesseract), text, and image (vision + OCR) ingestion → page-aware chunking
   → MongoDB persistence → **hybrid BM25 + FAISS retrieval fused via RRF**.
@@ -418,7 +408,7 @@ Current coverage:
 | `tests/test_retrieval.py`          | ~5   | Global KB BM25 + TF-IDF fusion logic                                    |
 | `tests/test_api.py`                | ~5   | Auth, thread CRUD, stats endpoints                                      |
 | `tests/test_uploads.py`            | ~10  | Upload PDF / text / image; chunking; OCR detection; FAISS persistence  |
-| `tests/test_uploads_regression.py` | ~6   | Cache pollution prevention; thread_files agent best-pick; recovery     |
+| `tests/test_uploads_regression.py` | ~6   | Repeat questions re-run the engine; thread_files agent best-pick        |
 | `tests/test_mentor_v2.py`          | ~10  | Conversation memory, hybrid retrieval, summarize endpoint, voice stubs |
 
 ---

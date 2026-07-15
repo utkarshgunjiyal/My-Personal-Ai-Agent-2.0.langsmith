@@ -1,18 +1,15 @@
 """LangGraph workflow for the multi-agent decision engine.
 
 Pipeline:
-    check_cache  ─►  (if hit) ──► END
-                 │
-                 └─►  agent_retrieval ─► agent_general ─► agent_tavily ─►
-                       agent_arxiv ─► evaluate ─► refine ─► write_cache ─► END
+    run_agents (agent_retrieval ∥ agent_general ∥ agent_tavily ∥ agent_arxiv)
+        ─► evaluate ─► refine ─► END
 """
 import asyncio
 import time
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from agents.cache import SemanticCache
 from agents.external import arxiv_search_context, tavily_search_context
 from agents.llm import call_llm
 from agents.retrieval import HybridRetriever
@@ -32,9 +29,9 @@ retriever = HybridRetriever()
 
 
 # --- LangSmith I/O shapers ---------------------------------------------------
-# The graph state carries non-serializable objects (motor db handle, the
-# SemanticCache with numpy matrices). These shapers project each node's
-# inputs/outputs down to a small, JSON-safe view so the trace stays readable.
+# The graph state carries non-serializable objects (e.g. the motor db handle).
+# These shapers project each node's inputs/outputs down to a small, JSON-safe
+# view so the trace stays readable.
 def _safe_state(d) -> dict:
     if not isinstance(d, dict):
         return {"value": str(d)[:200]}
@@ -43,9 +40,6 @@ def _safe_state(d) -> dict:
         "question",
         "user_id",
         "thread_id",
-        "cache_hit",
-        "cache_similarity",
-        "cached_question",
         "scores",
         "best_index",
         "elapsed_ms",
@@ -97,7 +91,6 @@ class EngineState(TypedDict, total=False):
     question: str
     user_id: str
     thread_id: str
-    cache: SemanticCache  # injected per-user, hydrated
     db: object  # motor db handle
     # outputs
     traces: list[AgentTrace]
@@ -105,9 +98,6 @@ class EngineState(TypedDict, total=False):
     best_index: int
     best_answer: str
     final_answer: str
-    cache_hit: bool
-    cache_similarity: float
-    cached_question: Optional[str]
     elapsed_ms: int
     started_at: float
 
@@ -121,32 +111,6 @@ AGENT_META = [
 
 
 # ---------- Nodes ----------
-@traceable(
-    run_type="chain",
-    name="check_cache",
-    process_inputs=_safe_state,
-    process_outputs=_safe_state,
-)
-async def check_cache(state: EngineState) -> EngineState:
-    cache: SemanticCache = state["cache"]
-    hit = cache.search(state["question"])
-    if hit:
-        add_current_tags("cache_hit")
-        update_current_metadata(cache_similarity=float(hit["similarity"]))
-        state["final_answer"] = hit["answer"]
-        state["cache_hit"] = True
-        state["cache_similarity"] = hit["similarity"]
-        state["cached_question"] = hit["matched_question"]
-        state["traces"] = []
-        state["scores"] = []
-        state["best_index"] = -1
-    else:
-        state["cache_hit"] = False
-        state["cache_similarity"] = 0.0
-        state["traces"] = []
-    return state
-
-
 @traceable(
     run_type="chain",
     name="agent",
@@ -358,66 +322,41 @@ async def _safe_refine(question: str, traces: list[AgentTrace], best_answer: str
         return f"[Engine temporarily unavailable: {str(e)[:200]}]"
 
 
-@traceable(
-    run_type="chain",
-    name="write_cache",
-    process_inputs=_safe_state,
-    process_outputs=_safe_state,
-)
-async def write_cache(state: EngineState) -> EngineState:
-    cache: SemanticCache = state["cache"]
-    db = state["db"]
-    await cache.add(db, state["user_id"], state["question"], state["final_answer"])
-    return state
-
-
-def _route_after_cache(state: EngineState):
-    return END if state.get("cache_hit") else "run_agents"
-
-
 # ---------- Build graph ----------
 def build_graph():
     g = StateGraph(EngineState)
-    g.add_node("check_cache", check_cache)
     g.add_node("run_agents", run_agents)
     g.add_node("evaluate", evaluate)
     g.add_node("refine", refine)
-    g.add_node("write_cache", write_cache)
 
-    g.set_entry_point("check_cache")
-    g.add_conditional_edges("check_cache", _route_after_cache, {END: END, "run_agents": "run_agents"})
+    g.set_entry_point("run_agents")
     g.add_edge("run_agents", "evaluate")
     g.add_edge("evaluate", "refine")
-    g.add_edge("refine", "write_cache")
-    g.add_edge("write_cache", END)
+    g.add_edge("refine", END)
     return g.compile()
 
 
 engine_graph = build_graph()
 
 
-async def run_engine(*, question: str, user_id: str, thread_id: str, cache: SemanticCache, db) -> dict:
+async def run_engine(*, question: str, user_id: str, thread_id: str, db) -> dict:
     state: EngineState = {
         "question": question,
         "user_id": user_id,
         "thread_id": thread_id,
-        "cache": cache,
         "db": db,
         "traces": [],
         "scores": [],
         "best_index": -1,
         "best_answer": "",
         "final_answer": "",
-        "cache_hit": False,
-        "cache_similarity": 0.0,
-        "cached_question": None,
         "started_at": time.perf_counter(),
     }
     started = time.perf_counter()
 
     # Root trace for the entire non-streaming engine run. Every @traceable
-    # node (check_cache, run_agents, agents, judge, refine, write_cache) plus
-    # the retriever / cache / external-tool spans attach as children.
+    # node (run_agents, agents, judge, refine) plus the retriever /
+    # external-tool spans attach as children.
     async with trace_root(
         name="ask_engine",
         run_type="chain",
@@ -435,12 +374,10 @@ async def run_engine(*, question: str, user_id: str, thread_id: str, cache: Sema
         best_agent = (
             result["traces"][best_idx]["name"]
             if result.get("traces") and 0 <= best_idx < len(result["traces"])
-            else ("cache" if result.get("cache_hit") else None)
+            else None
         )
 
         update_current_metadata(
-            cache_hit=bool(result.get("cache_hit")),
-            cache_similarity=float(result.get("cache_similarity", 0.0)),
             best_index=best_idx,
             best_agent=best_agent,
             best_score=best_score,
@@ -448,7 +385,6 @@ async def run_engine(*, question: str, user_id: str, thread_id: str, cache: Sema
         set_current_outputs(
             {
                 "final_answer": (result.get("final_answer") or "")[:1000],
-                "cache_hit": bool(result.get("cache_hit")),
                 "best_agent": best_agent,
                 "best_score": best_score,
                 "scores": [float(s) for s in scores],

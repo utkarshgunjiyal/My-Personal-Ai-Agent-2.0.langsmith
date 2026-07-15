@@ -27,7 +27,7 @@ app = FastAPI(
     title="AI Decision Engine API",
     description=(
         "Multi-agent RAG decision engine. LangGraph workflow, hybrid retrieval, "
-        "LLM-as-judge evaluation, answer refinement, persistent semantic cache, "
+        "LLM-as-judge evaluation, answer refinement, "
         "MongoDB persistence, JWT authentication."
     ),
     version="2.0.0",

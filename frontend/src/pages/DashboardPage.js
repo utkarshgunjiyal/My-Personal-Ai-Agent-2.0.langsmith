@@ -96,15 +96,9 @@ export default function DashboardPage() {
         {/* Metric tiles */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-white/10 mb-12" data-testid="metric-tiles">
           <MetricTile icon={Lightning} label="Total queries" value={t.queries} testid="metric-total-queries" />
-          <MetricTile
-            icon={Database}
-            label="Cache hit rate"
-            value={`${(t.cache_hit_rate * 100).toFixed(1)}%`}
-            sub={`${t.cache_hits} of ${t.queries}`}
-            testid="metric-cache-rate"
-          />
-          <MetricTile icon={Timer} label="Avg latency (miss)" value={`${(t.avg_latency_ms / 1000).toFixed(1)}s`} testid="metric-latency" />
-          <MetricTile icon={ChartBar} label="Last 7 days" value={t.queries_last_7d} sub={`${t.threads} threads`} testid="metric-7d" />
+          <MetricTile icon={Database} label="Threads" value={t.threads} testid="metric-threads" />
+          <MetricTile icon={Timer} label="Avg latency" value={`${(t.avg_latency_ms / 1000).toFixed(1)}s`} testid="metric-latency" />
+          <MetricTile icon={ChartBar} label="Last 7 days" value={t.queries_last_7d} testid="metric-7d" />
         </div>
 
         {/* Agent performance */}
@@ -184,13 +178,13 @@ export default function DashboardPage() {
             )}
             {recent.map((r, i) => (
               <div key={i} className="px-6 py-3 flex items-center gap-4 text-sm" data-testid={`recent-row-${i}`}>
-                <span className={`w-1.5 h-1.5 ${r.cache_hit ? 'bg-cache' : 'bg-white/60'}`} aria-hidden />
+                <span className="w-1.5 h-1.5 bg-white/60" aria-hidden />
                 <span className="flex-1 truncate text-white/80">{r.question}</span>
                 <span className="font-mono text-[10px] text-white/40 hidden sm:inline">
                   {(r.elapsed_ms / 1000).toFixed(1)}s
                 </span>
                 <span className="font-mono text-[10px] text-white/40 hidden md:inline">
-                  {r.cache_hit ? 'CACHE' : `BEST=${AGENT_LABEL[Object.keys(AGENT_LABEL)[r.best_index]] || '—'}`}
+                  {`BEST=${AGENT_LABEL[Object.keys(AGENT_LABEL)[r.best_index]] || '—'}`}
                 </span>
                 <span className="font-mono text-[10px] text-white/30 hidden lg:inline">
                   {new Date(r.created_at).toLocaleString()}
