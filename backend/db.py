@@ -26,7 +26,6 @@ async def init_indexes():
     await db.login_attempts.create_index("identifier")
     await db.threads.create_index([("user_id", 1), ("updated_at", -1)])
     await db.messages.create_index([("thread_id", 1), ("created_at", 1)])
-    await db.semantic_cache.create_index("user_id")
     await db.agent_runs.create_index([("user_id", 1), ("created_at", -1)])
     await db.uploaded_files.create_index([("thread_id", 1), ("created_at", 1)])
     await db.uploaded_files.create_index("file_id", unique=True)

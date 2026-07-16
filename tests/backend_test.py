@@ -1,8 +1,8 @@
 """End-to-end backend API tests for AI Decision Engine.
 
 Covers: health, auth (register/login/me/logout), invalid login,
-threads CRUD, ask pipeline (4 agents + cache), semantic cache hit,
-stats overview, auth gating, thread isolation.
+threads CRUD, ask pipeline (4 agents), stats overview, auth gating,
+thread isolation.
 """
 import os
 import time
@@ -173,8 +173,6 @@ class TestThreadsAndAsk:
         # Should have 4 traces (one per agent)
         assert len(msg["traces"]) == 4, f"expected 4 traces, got {len(msg['traces'])}"
         assert len(msg["scores"]) == 4
-        # cache should be miss for a brand-new user/question
-        assert msg["cache_hit"] is False
         # store for next test
         user_session._thread_id = data["thread_id"]  # type: ignore[attr-defined]
         user_session._first_q = q  # type: ignore[attr-defined]
@@ -204,21 +202,19 @@ class TestThreadsAndAsk:
         roles = [m["role"] for m in msgs]
         assert "user" in roles and "assistant" in roles
 
-    def test_semantic_cache_hit_on_repeat(self, user_session):
+    def test_repeat_question_runs_full_pipeline(self, user_session):
+        """No semantic cache: a repeated identical question must run the
+        engine again (fresh traces + scores, never a canned answer)."""
         q = getattr(user_session, "_first_q", None)
         assert q
         r = user_session.post(
-            f"{BASE_URL}/api/ask", json={"question": q}, timeout=60
+            f"{BASE_URL}/api/ask", json={"question": q}, timeout=180
         )
         assert r.status_code == 200
         msg = r.json()["message"]
-        # The second identical question should hit cache
-        if not msg["cache_hit"]:
-            pytest.fail(
-                f"Expected cache_hit=True on repeat, got False. "
-                f"similarity={msg.get('cache_similarity')}"
-            )
-        assert msg["cache_similarity"] > 0.7
+        assert len(msg.get("traces", [])) == 4, "repeat question must re-run all 4 agents"
+        assert len(msg.get("scores", [])) == 4
+        assert msg.get("content")
 
     def test_delete_thread(self, user_session):
         # Create a throwaway thread via /api/threads POST
@@ -255,7 +251,7 @@ class TestStats:
         data = r.json()
         assert data["is_admin_view"] is True
         assert "totals" in data
-        for k in ("queries", "cache_hits", "cache_hit_rate", "queries_last_7d", "avg_latency_ms"):
+        for k in ("queries", "threads", "queries_last_7d", "avg_latency_ms"):
             assert k in data["totals"]
         assert isinstance(data["agents"], list)
         assert len(data["agents"]) == 4

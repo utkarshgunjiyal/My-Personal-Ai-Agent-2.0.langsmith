@@ -18,7 +18,6 @@ async def overview(user=Depends(get_current_user)):
     base_filter = {} if is_admin else {"user_id": user["user_id"]}
 
     total = await db.agent_runs.count_documents(base_filter)
-    cache_hits = await db.agent_runs.count_documents({**base_filter, "cache_hit": True})
     threads = await db.threads.count_documents(base_filter)
 
     since = datetime.now(timezone.utc) - timedelta(days=7)
@@ -26,9 +25,11 @@ async def overview(user=Depends(get_current_user)):
         {**base_filter, "created_at": {"$gte": since}}
     )
 
-    # Avg latency (only on miss runs that actually invoke agents)
+    # Avg latency. Legacy runs recorded before the semantic cache was removed
+    # may carry cache_hit=true with ~10ms latencies; exclude them so they
+    # don't skew the average ($ne also matches new docs without the field).
     pipeline_latency = [
-        {"$match": {**base_filter, "cache_hit": False}},
+        {"$match": {**base_filter, "cache_hit": {"$ne": True}}},
         {"$group": {"_id": None, "avg_ms": {"$avg": "$elapsed_ms"}}},
     ]
     cur = db.agent_runs.aggregate(pipeline_latency)
@@ -37,7 +38,7 @@ async def overview(user=Depends(get_current_user)):
 
     # Average per-agent score
     pipeline_scores = [
-        {"$match": {**base_filter, "cache_hit": False, "scores.0": {"$exists": True}}},
+        {"$match": {**base_filter, "scores.0": {"$exists": True}}},
         {
             "$project": {
                 "scores": 1,
@@ -70,14 +71,10 @@ async def overview(user=Depends(get_current_user)):
         for i in range(4)
     ]
 
-    cache_hit_rate = round(cache_hits / total, 4) if total else 0.0
-
     return {
         "is_admin_view": is_admin,
         "totals": {
             "queries": total,
-            "cache_hits": cache_hits,
-            "cache_hit_rate": cache_hit_rate,
             "threads": threads,
             "queries_last_7d": weekly,
             "avg_latency_ms": avg_latency_ms,

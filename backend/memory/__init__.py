@@ -71,7 +71,7 @@ async def maybe_update_summary(db, thread_id: str, message_count: int) -> bool:
     """If at least SUMMARIZE_EVERY messages have elapsed since the last summary,
     regenerate the rolling summary. Uses a delta-against-last-summarized counter
     (rather than strict modulus) so we still update even if a boundary turn was
-    served from cache or skipped for any other reason.
+    skipped for any reason.
     """
     if message_count < SUMMARIZE_EVERY:
         return False

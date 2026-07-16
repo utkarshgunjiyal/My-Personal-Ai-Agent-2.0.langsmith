@@ -6,24 +6,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from agents.cache import SemanticCache
 from agents.graph import run_engine
 from auth.deps import get_current_user
 from db import get_db
 
 router = APIRouter(prefix="/api", tags=["chat"])
-
-
-# In-process cache per user. Persistent via MongoDB hydration on access.
-_user_caches: dict[str, SemanticCache] = {}
-
-
-async def _get_user_cache(user_id: str) -> SemanticCache:
-    if user_id not in _user_caches:
-        cache = SemanticCache(threshold=0.72)
-        await cache.hydrate(get_db(), user_id)
-        _user_caches[user_id] = cache
-    return _user_caches[user_id]
 
 
 # ----- Schemas -----
@@ -153,10 +140,9 @@ async def ask(body: AskIn, user=Depends(get_current_user)):
     )
 
     # Run engine
-    cache = await _get_user_cache(user_id)
     started = time.perf_counter()
     result = await run_engine(
-        question=question, user_id=user_id, thread_id=thread_id, cache=cache, db=db
+        question=question, user_id=user_id, thread_id=thread_id, db=db
     )
     elapsed_ms = int((time.perf_counter() - started) * 1000)
 
@@ -168,9 +154,6 @@ async def ask(body: AskIn, user=Depends(get_current_user)):
         "user_id": user_id,
         "role": "assistant",
         "content": result["final_answer"],
-        "cache_hit": bool(result.get("cache_hit")),
-        "cache_similarity": float(result.get("cache_similarity", 0.0)),
-        "cached_question": result.get("cached_question"),
         "traces": result.get("traces", []),
         "scores": result.get("scores", []),
         "best_index": result.get("best_index", -1),
@@ -201,7 +184,6 @@ async def ask(body: AskIn, user=Depends(get_current_user)):
             "user_id": user_id,
             "thread_id": thread_id,
             "question": question,
-            "cache_hit": bool(result.get("cache_hit")),
             "scores": result.get("scores", []),
             "best_index": result.get("best_index", -1),
             "elapsed_ms": elapsed_ms,

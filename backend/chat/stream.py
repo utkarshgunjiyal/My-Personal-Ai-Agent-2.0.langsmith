@@ -2,7 +2,6 @@
 
 SSE events emitted:
     thread          {thread_id, is_new}
-    cache_check     {hit, similarity?, matched_question?, answer?}
     uploads_used    {file_count, matched_chunks}
     memory_loaded   {has_summary, recent_messages}
     agent_start     {index, name, color}
@@ -29,7 +28,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import memory as conv_memory
-from agents.cache import SemanticCache
 from agents.external import arxiv_search_context, tavily_search_context
 from agents.graph import _is_error_trace
 from agents.llm import call_llm, stream_llm
@@ -51,15 +49,6 @@ from uploads.retriever import format_docs_for_context, retrieve_thread_docs
 router = APIRouter(prefix="/api", tags=["chat-stream"])
 
 _retriever = HybridRetriever()
-_caches: dict[str, SemanticCache] = {}
-
-
-async def _user_cache(user_id: str) -> SemanticCache:
-    if user_id not in _caches:
-        c = SemanticCache(threshold=0.72)
-        await c.hydrate(get_db(), user_id)
-        _caches[user_id] = c
-    return _caches[user_id]
 
 
 def _sse(event: str, data: dict) -> str:
@@ -279,115 +268,14 @@ async def _run_engine(
         }
     )
 
-    # --- Cache (skipped if thread has uploaded files) ---
+    # --- Detect thread uploads (adds the thread_files agent when present) ---
     upload_count = await db.uploaded_files.count_documents(
         {"thread_id": thread_id, "user_id": user_id}
     )
     has_uploads = upload_count > 0
-    cache = await _user_cache(user_id)
-    hit = cache.search(question) if not has_uploads else None
-    # Load conversation memory regardless of cache outcome so the SSE contract
-    # is uniform (memory_loaded is always emitted after cache_check).
+
+    # --- Load conversation memory ---
     mem = await conv_memory.compose_context(db, thread_id)
-    if hit:
-        yield _sse(
-            "cache_check",
-            {
-                "hit": True,
-                "similarity": hit["similarity"],
-                "matched_question": hit["matched_question"],
-                "answer": hit["answer"],
-            },
-        ).encode()
-        yield _sse(
-            "memory_loaded",
-            {
-                "has_summary": bool(mem["summary"]),
-                "recent_messages": len([m for m in (mem["history"] or "").split("\n") if m]),
-            },
-        ).encode()
-        msg_id = f"msg_{uuid.uuid4().hex[:14]}"
-        elapsed_ms = int((time.perf_counter() - started_total) * 1000)
-        asst_doc = {
-            "message_id": msg_id,
-            "thread_id": thread_id,
-            "user_id": user_id,
-            "role": "assistant",
-            "content": hit["answer"],
-            "cache_hit": True,
-            "cache_similarity": float(hit["similarity"]),
-            "cached_question": hit["matched_question"],
-            "traces": [],
-            "scores": [],
-            "best_index": -1,
-            "elapsed_ms": elapsed_ms,
-            "created_at": datetime.now(timezone.utc),
-        }
-        # --- Cache hit: enrich the trace and persist the trace id ----------
-        add_current_tags("cache_hit")
-        update_current_metadata(
-            cache_hit=True,
-            cache_similarity=float(hit["similarity"]),
-            best_agent="cache",
-        )
-        set_current_outputs(
-            {
-                "final_answer": hit["answer"],
-                "source": "semantic_cache",
-                "matched_question": hit["matched_question"],
-                "similarity": float(hit["similarity"]),
-            }
-        )
-        asst_doc["ls_run_id"] = root_run_id
-        asst_doc["ls_url"] = trace_url(root_run_id)
-        await db.messages.insert_one(asst_doc)
-        upd = await db.threads.find_one_and_update(
-            {"thread_id": thread_id},
-            {"$inc": {"message_count": 2}, "$set": {"updated_at": datetime.now(timezone.utc)}},
-            return_document=False,
-        )
-        new_msg_count = ((upd or {}).get("message_count") or 0) + 2
-        # Rolling summary must also run on cache-hit turns so the boundary
-        # isn't skipped just because the engine path didn't execute.
-        try:
-            updated = await conv_memory.maybe_update_summary(db, thread_id, new_msg_count)
-            if updated:
-                new_summary = await conv_memory.get_summary(db, thread_id)
-                yield _sse("summary_updated", {"summary": new_summary}).encode()
-        except Exception as e:
-            import logging as _logging
-            _logging.getLogger("chat.stream").warning("Cache-hit summary regen failed: %s", e)
-        await db.agent_runs.insert_one(
-            {
-                "user_id": user_id,
-                "thread_id": thread_id,
-                "question": question,
-                "cache_hit": True,
-                "scores": [],
-                "best_index": -1,
-                "elapsed_ms": elapsed_ms,
-                "created_at": datetime.now(timezone.utc),
-            }
-        )
-        yield _sse(
-            "done",
-            {
-                "thread_id": thread_id,
-                "message_id": msg_id,
-                "elapsed_ms": elapsed_ms,
-                "cache_hit": True,
-                "cache_similarity": float(hit["similarity"]),
-                "cached_question": hit["matched_question"],
-                "final_answer": hit["answer"],
-                "ls_run_id": root_run_id,
-                "ls_url": trace_url(root_run_id),
-            },
-        ).encode()
-        return
-
-    yield _sse("cache_check", {"hit": False}).encode()
-
-    # --- Emit memory loaded SSE (already composed above) ---
     yield _sse(
         "memory_loaded",
         {
@@ -575,7 +463,7 @@ async def _run_engine(
         }
     )
 
-    # --- Persist assistant message + cache + agent_run ---
+    # --- Persist assistant message + agent_run ---
     elapsed_ms = int((time.perf_counter() - started_total) * 1000)
     msg_id = f"msg_{uuid.uuid4().hex[:14]}"
     asst_doc = {
@@ -584,9 +472,6 @@ async def _run_engine(
         "user_id": user_id,
         "role": "assistant",
         "content": final_answer,
-        "cache_hit": False,
-        "cache_similarity": 0.0,
-        "cached_question": None,
         "traces": traces,
         "scores": [float(s) for s in scores],
         "best_index": best_index,
@@ -596,8 +481,6 @@ async def _run_engine(
         "created_at": datetime.now(timezone.utc),
     }
     await db.messages.insert_one(asst_doc)
-    if not has_uploads:
-        await cache.add(db, user_id, question, final_answer)
 
     upd = await db.threads.find_one_and_update(
         {"thread_id": thread_id},
@@ -620,7 +503,6 @@ async def _run_engine(
             "user_id": user_id,
             "thread_id": thread_id,
             "question": question,
-            "cache_hit": False,
             "scores": [float(s) for s in scores],
             "best_index": best_index,
             "elapsed_ms": elapsed_ms,
@@ -634,7 +516,6 @@ async def _run_engine(
             "thread_id": thread_id,
             "message_id": msg_id,
             "elapsed_ms": elapsed_ms,
-            "cache_hit": False,
             "final_answer": final_answer,
             "traces": traces,
             "scores": [float(s) for s in scores],

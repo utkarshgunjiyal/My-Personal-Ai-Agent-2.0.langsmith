@@ -20,8 +20,7 @@ module.exports = {
           web: '#34C759',
           arxiv: '#FF3B30'
         },
-        judge: '#FFFFFF',
-        cache: '#32ADE6'
+        judge: '#FFFFFF'
       },
       borderRadius: {
         sm: '2px'

@@ -33,8 +33,7 @@
       "agent_2_general": "#FFCC00",
       "agent_3_web": "#34C759",
       "agent_4_arxiv": "#FF3B30",
-      "judge_evaluator": "#FFFFFF",
-      "cache_hit": "#32ADE6"
+      "judge_evaluator": "#FFFFFF"
     },
     "rules": [
       "CRITICAL: Never use pure #000000. Use the tinted Obsidian #0A0A0A base.",
@@ -72,9 +71,6 @@
       "layout": "Use Shadcn Accordion or a custom stacked list.",
       "indicators": "Use the specific accent colors to color-code each agent's contribution. Use prominent badges for Judge scores.",
       "font": "MUST use JetBrains Mono for the raw agent output."
-    },
-    "cache_indicator": {
-      "design": "Small glowing dot (using drop-shadow-[0_0_8px_rgba(50,173,230,0.5)]) next to response. Label: 'Semantic Cache Hit'."
     },
     "stats_dashboard": {
       "style": "Control Room Grid. No soft shadows.",

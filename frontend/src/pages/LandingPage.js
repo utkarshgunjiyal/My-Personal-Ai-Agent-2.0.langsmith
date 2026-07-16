@@ -7,7 +7,7 @@ const features = [
   { icon: Brain, color: '#FFCC00', name: 'LLM-as-judge', desc: 'Independent evaluator scores every candidate answer, then a refiner synthesizes the best.' },
   { icon: Database, color: '#34C759', name: 'Persistent threads', desc: 'Every conversation, score and trace is stored in MongoDB. Resume after server crashes.' },
   { icon: Lightning, color: '#FF3B30', name: 'Hybrid retrieval', desc: 'BM25 + TF-IDF cosine search over an in-process knowledge base. Sub-100ms recall.' },
-  { icon: ShieldCheck, color: '#32ADE6', name: 'Semantic cache', desc: 'Embedding-similar past questions reuse prior answers — cutting LLM cost and latency.' }
+  { icon: ShieldCheck, color: '#32ADE6', name: 'Fresh answers', desc: 'Every question runs the full pipeline — no stale cached responses, ever.' }
 ];
 
 const agents = [
@@ -51,8 +51,8 @@ export default function LandingPage() {
                 <span className="text-white/40">multi-agent</span> AI decisions.
               </h1>
               <p className="mt-8 max-w-xl text-white/70 leading-relaxed">
-                Four parallel agents debate. A judge scores. A refiner synthesizes. Every answer is grounded,
-                cached, and persisted — across server restarts.
+                Four parallel agents debate. A judge scores. A refiner synthesizes. Every answer is grounded
+                and persisted — across server restarts.
               </p>
               <div className="mt-10 flex items-center gap-3">
                 <Link

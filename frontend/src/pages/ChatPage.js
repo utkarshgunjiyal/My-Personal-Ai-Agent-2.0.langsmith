@@ -261,7 +261,7 @@ export default function ChatPage() {
     setError('');
     setStreamingAnswer('');
     setPipeline({
-      phase: 'checking cache',
+      phase: 'running agents',
       agents: uploads.length > 0
         ? { local_retrieval: 'pending', general_llm: 'pending', tavily_web: 'pending', arxiv_research: 'pending', thread_files: 'pending' }
         : { local_retrieval: 'pending', general_llm: 'pending', tavily_web: 'pending', arxiv_research: 'pending' },
@@ -289,13 +289,6 @@ export default function ChatPage() {
         onEvent: ({ event, data }) => {
           if (event === 'thread') {
             newThreadId = data.thread_id;
-          } else if (event === 'cache_check') {
-            if (data.hit) {
-              setPipeline((p) => ({ ...(p || {}), phase: 'cache hit' }));
-              setStreamingAnswer(data.answer || '');
-            } else {
-              setPipeline((p) => ({ ...(p || {}), phase: 'running agents' }));
-            }
           } else if (event === 'uploads_used') {
             setPipeline((p) => ({
               ...(p || {}),
@@ -326,9 +319,6 @@ export default function ChatPage() {
               message_id: data.message_id,
               role: 'assistant',
               content: data.final_answer,
-              cache_hit: !!data.cache_hit,
-              cache_similarity: data.cache_similarity || 0,
-              cached_question: data.cached_question || null,
               traces: data.traces || [],
               scores: data.scores || [],
               best_index: typeof data.best_index === 'number' ? data.best_index : -1,
@@ -753,21 +743,7 @@ function Message({ msg, index, openTraceIndex, setOpenTraceIndex }) {
       <div className="flex items-center gap-2 mb-2">
         <Lightning size={14} weight="fill" className="text-white" />
         <span className="font-mono text-[10px] tracking-[0.25em] text-white/50">ENGINE</span>
-        {msg.cache_hit && (
-          <span
-            className="inline-flex items-center gap-1.5 ml-2 text-[10px] font-mono tracking-wider px-2 py-0.5 border border-cache/40 bg-cache/10 text-cache"
-            data-testid={`cache-hit-badge-${index}`}
-            title={`Matched: "${msg.cached_question}" (sim ${(msg.cache_similarity * 100).toFixed(1)}%)`}
-          >
-            <span
-              className="w-1.5 h-1.5 bg-cache animate-pulse-glow"
-              style={{ boxShadow: '0 0 8px rgba(50,173,230,0.6)' }}
-              aria-hidden
-            />
-            CACHE HIT · {(msg.cache_similarity * 100).toFixed(0)}%
-          </span>
-        )}
-        {!msg.cache_hit && typeof msg.elapsed_ms === 'number' && (
+        {typeof msg.elapsed_ms === 'number' && (
           <span className="text-[10px] font-mono text-white/40 ml-2">
             {(msg.elapsed_ms / 1000).toFixed(1)}s
           </span>
@@ -789,7 +765,7 @@ function Message({ msg, index, openTraceIndex, setOpenTraceIndex }) {
       </div>
       <div className="text-sm leading-relaxed whitespace-pre-wrap text-white/90">{msg.content}</div>
 
-      {!msg.cache_hit && Array.isArray(msg.traces) && msg.traces.length > 0 && (
+      {Array.isArray(msg.traces) && msg.traces.length > 0 && (
         <div className="mt-4">
           <button
             onClick={() => setOpenTraceIndex(isTraceOpen ? null : index)}

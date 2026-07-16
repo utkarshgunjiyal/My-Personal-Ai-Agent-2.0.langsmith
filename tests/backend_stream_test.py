@@ -82,15 +82,12 @@ class TestStreamFlow:
         agent_starts = 0
         agent_completes = 0
         refine_tokens = 0
-        cache_hit_seen = None
         judge_scores = None
         done_payload = None
         for event, data in parse_sse_stream(r):
             events.append(event)
             if event == "thread":
                 thread_id = data["thread_id"]
-            elif event == "cache_check":
-                cache_hit_seen = data.get("hit")
             elif event == "agent_start":
                 agent_starts += 1
             elif event == "agent_complete":
@@ -108,8 +105,6 @@ class TestStreamFlow:
 
         # Order/structural assertions
         assert events[0] == "thread", f"first event must be 'thread', got {events[:3]}"
-        assert "cache_check" in events
-        assert cache_hit_seen is False
         assert agent_starts == 4, f"expected 4 agent_start, got {agent_starts}"
         assert agent_completes == 4, f"expected 4 agent_complete, got {agent_completes}"
         assert judge_scores is not None and len(judge_scores["scores"]) == 4
@@ -132,12 +127,14 @@ class TestStreamFlow:
         assert asst.get("best_index") in [0, 1, 2, 3]
         assert asst.get("elapsed_ms", 0) > 0
 
-        # Save for cache-hit test on same session/thread
-        TestStreamFlow._cached_q = unique_q  # type: ignore[attr-defined]
+        # Save for the repeat-question test on same session/thread
+        TestStreamFlow._repeat_q = unique_q  # type: ignore[attr-defined]
         TestStreamFlow._thread = thread_id  # type: ignore[attr-defined]
 
-    def test_repeat_question_hits_cache(self, user_session):
-        q = getattr(TestStreamFlow, "_cached_q", None)
+    def test_repeat_question_runs_engine_again(self, user_session):
+        """No semantic cache: repeating the exact same question must run the
+        full agent pipeline again instead of returning a canned answer."""
+        q = getattr(TestStreamFlow, "_repeat_q", None)
         tid = getattr(TestStreamFlow, "_thread", None)
         assert q and tid, "depends on first test"
 
@@ -145,31 +142,26 @@ class TestStreamFlow:
             f"{BASE_URL}/api/ask/stream",
             json={"question": q, "thread_id": tid},
             stream=True,
-            timeout=60,
+            timeout=120,
         )
         assert r.status_code == 200
 
         events = []
-        cache_hit = None
         done_payload = None
         for event, data in parse_sse_stream(r):
             events.append(event)
-            if event == "cache_check":
-                cache_hit = data
-            elif event == "done":
+            if event == "done":
                 done_payload = data
                 break
             elif event == "error":
-                pytest.fail(f"cache stream errored: {data}")
+                pytest.fail(f"repeat stream errored: {data}")
 
-        assert cache_hit is not None and cache_hit.get("hit") is True
-        assert cache_hit.get("similarity", 0) >= 0.72
-        # No agent_* or refine_token events for cache hit
-        for forbidden in ("agent_start", "agent_complete", "judge_scores", "refine_token"):
-            assert forbidden not in events, f"cache hit should not emit {forbidden}, got {events}"
+        # The engine must actually run: agents, judge and refiner all fire.
+        for required in ("agent_start", "agent_complete", "judge_scores", "refine_token"):
+            assert required in events, f"repeat question must emit {required}, got {events}"
         assert done_payload is not None
-        assert done_payload.get("cache_hit") is True
         assert done_payload.get("final_answer")
+        assert len(done_payload.get("traces", [])) == 4
 
 
 # ---------- Regression: non-streaming /api/ask still works ----------
