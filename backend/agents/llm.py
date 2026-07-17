@@ -27,7 +27,10 @@ DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
 
 _PROVIDER_BASE_URLS = {
     "openai": None,  # use the SDK default
-    "openrouter": "https://openrouter.ai/api/v1",
+    "openrouter": os.environ.get(
+        "OPENROUTER_BASE_URL",
+        "https://openrouter.ai/api/v1",
+    ),
 }
 
 
