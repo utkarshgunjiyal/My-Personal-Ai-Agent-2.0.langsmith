@@ -8,19 +8,16 @@ on:
 
 jobs:
   backend-tests:
-    name: Backend tests
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/backend
+      FAISS_DIR: ${{ runner.temp }}/faiss
 
     services:
       mongo:
         image: mongo:7
         ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          - "27017:27017"
 
     steps:
       - name: Check out repository
@@ -36,61 +33,50 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install pytest httpx
+          python -m pip install -r backend/requirements.txt
+          python -m pip install pytest httpx
 
-      - name: Run unit tests
-        env:
-          PYTHONPATH: ${{ github.workspace }}/backend
-          FAISS_DIR: ${{ runner.temp }}/faiss
-        run: |
-          mkdir -p "${{ runner.temp }}/faiss"
-          python -m pytest tests/test_retrieval.py -v
+      - name: Prepare writable FAISS directory
+        run: mkdir -p "$FAISS_DIR"
+
+      - name: Run retrieval unit tests
+        run: python -m pytest tests/test_retrieval.py -v
 
       - name: Boot backend
         env:
-          PYTHONPATH: ${{ github.workspace }}/backend
           MONGO_URL: mongodb://localhost:27017
           DB_NAME: ci_test
           JWT_SECRET: ci-secret-${{ github.run_id }}
           OPENAI_API_KEY: dummy-key-for-routes-only
           OPENROUTER_API_KEY: dummy-key-for-routes-only
-          OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
           LLM_PROVIDER: openai
           LLM_MODEL: gpt-4o-mini
-          FAISS_DIR: ${{ runner.temp }}/faiss
           ADMIN_EMAIL: admin@ci.dev
           ADMIN_PASSWORD: ci123456
           FRONTEND_URL: http://localhost:3000
+          LANGSMITH_TRACING: "false"
         run: |
-          mkdir -p "${{ runner.temp }}/faiss"
           cd backend
-          nohup python -m uvicorn server:app \
-            --host 0.0.0.0 \
-            --port 8001 \
-            > /tmp/backend.log 2>&1 &
+          nohup python -m uvicorn server:app --host 0.0.0.0 --port 8001 > /tmp/backend.log 2>&1 &
 
           for attempt in {1..30}; do
-            if curl --fail --silent http://localhost:8001/docs >/dev/null; then
-              echo "Backend started successfully"
+            if curl --fail --silent http://localhost:8001/api/health >/dev/null; then
+              echo "Backend is ready"
               exit 0
             fi
             sleep 1
           done
 
-          echo "Backend failed to start"
+          echo "Backend failed to become ready"
           cat /tmp/backend.log
           exit 1
 
-      - name: Run smoke tests
+      - name: Run API smoke tests
         env:
-          PYTHONPATH: ${{ github.workspace }}/backend
           E2E_BACKEND_URL: http://localhost:8001
-          FAISS_DIR: ${{ runner.temp }}/faiss
         run: python -m pytest tests/test_api.py -v
 
   frontend-build:
-    name: Frontend build
     runs-on: ubuntu-latest
 
     steps:
@@ -100,7 +86,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -112,5 +98,7 @@ jobs:
         working-directory: frontend
         env:
           REACT_APP_BACKEND_URL: http://localhost:8001
+          # The current source has a non-fatal React Hooks lint warning.
+          # CRA promotes warnings to errors when CI=true.
           CI: "false"
         run: npm run build
