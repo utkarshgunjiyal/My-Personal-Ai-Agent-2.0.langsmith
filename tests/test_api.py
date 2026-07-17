@@ -31,13 +31,23 @@ def _register_user(email: str, password: str, name: str = "Test User"):
 
 
 def test_auth_register_and_me():
-    email = f"smoke_{int(time.time())}@example.com"
-    r, c = _register_user(email, "secret123")
-    assert r.status_code == 200, r.text
-    user = r.json()
-    assert user["email"] == email
-    me = c.get("/api/auth/me", cookies=r.cookies)
-    assert me.status_code == 200
+    email = f"ci-{uuid.uuid4().hex[:10]}@example.com"
+
+    with httpx.Client(base_url=BASE_URL) as c:
+        r = c.post(
+            "/api/auth/register",
+            json={
+                "name": "CI User",
+                "email": email,
+                "password": "TestPassword123!",
+            },
+        )
+        assert r.status_code in (200, 201), r.text
+
+        # The client is still open here and already stores response cookies.
+        me = c.get("/api/auth/me")
+        assert me.status_code == 200, me.text
+        assert me.json()["email"] == email
 
 
 def test_auth_login_wrong_password():
