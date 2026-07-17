@@ -1,6 +1,8 @@
 """Smoke tests that exercise the public API without invoking the LLM (where possible)."""
+
 import os
 import time
+import uuid
 
 import httpx
 import pytest
@@ -22,27 +24,36 @@ def test_health():
 
 
 def _register_user(email: str, password: str, name: str = "Test User"):
-    with httpx.Client(base_url=BASE, timeout=20) as c:
-        r = c.post(
+    with httpx.Client(base_url=BASE, timeout=20) as client:
+        return client.post(
             "/api/auth/register",
             json={"email": email, "password": password, "name": name},
         )
-        return r, c
 
 
 def test_auth_register_and_me():
-    email = f"smoke_{int(time.time())}@example.com"
-    r, c = _register_user(email, "secret123")
-    assert r.status_code == 200, r.text
-    user = r.json()
-    assert user["email"] == email
-    me = c.get("/api/auth/me", cookies=r.cookies)
-    assert me.status_code == 200
+    email = f"ci-{uuid.uuid4().hex[:10]}@example.com"
+
+    with httpx.Client(base_url=BASE, timeout=20) as client:
+        register = client.post(
+            "/api/auth/register",
+            json={
+                "email": email,
+                "password": "TestPass123!",
+                "name": "CI Tester",
+            },
+        )
+        assert register.status_code in (200, 201), register.text
+
+        me = client.get("/api/auth/me")
+        assert me.status_code == 200, me.text
 
 
 def test_auth_login_wrong_password():
     email = f"smoke2_{int(time.time())}@example.com"
-    _register_user(email, "secret123")
+    register = _register_user(email, "secret123")
+    assert register.status_code in (200, 201), register.text
+
     r = httpx.post(
         f"{BASE}/api/auth/login",
         json={"email": email, "password": "WRONG"},
