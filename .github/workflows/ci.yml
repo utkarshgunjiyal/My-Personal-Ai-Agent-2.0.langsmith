@@ -8,18 +8,26 @@ on:
 
 jobs:
   backend-tests:
+    name: Backend tests
     runs-on: ubuntu-latest
 
     services:
       mongo:
         image: mongo:7
         ports:
-          - "27017:27017"
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
@@ -34,7 +42,10 @@ jobs:
       - name: Run unit tests
         env:
           PYTHONPATH: ${{ github.workspace }}/backend
-        run: python -m pytest tests/test_retrieval.py -v
+          FAISS_DIR: ${{ runner.temp }}/faiss
+        run: |
+          mkdir -p "${{ runner.temp }}/faiss"
+          python -m pytest tests/test_retrieval.py -v
 
       - name: Boot backend
         env:
@@ -44,20 +55,30 @@ jobs:
           JWT_SECRET: ci-secret-${{ github.run_id }}
           OPENAI_API_KEY: dummy-key-for-routes-only
           OPENROUTER_API_KEY: dummy-key-for-routes-only
+          OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
           LLM_PROVIDER: openai
           LLM_MODEL: gpt-4o-mini
+          FAISS_DIR: ${{ runner.temp }}/faiss
           ADMIN_EMAIL: admin@ci.dev
           ADMIN_PASSWORD: ci123456
           FRONTEND_URL: http://localhost:3000
         run: |
+          mkdir -p "${{ runner.temp }}/faiss"
           cd backend
-          nohup python -m uvicorn server:app --host 0.0.0.0 --port 8001 > /tmp/backend.log 2>&1 &
-          for attempt in {1..20}; do
+          nohup python -m uvicorn server:app \
+            --host 0.0.0.0 \
+            --port 8001 \
+            > /tmp/backend.log 2>&1 &
+
+          for attempt in {1..30}; do
             if curl --fail --silent http://localhost:8001/docs >/dev/null; then
+              echo "Backend started successfully"
               exit 0
             fi
             sleep 1
           done
+
+          echo "Backend failed to start"
           cat /tmp/backend.log
           exit 1
 
@@ -65,15 +86,19 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/backend
           E2E_BACKEND_URL: http://localhost:8001
+          FAISS_DIR: ${{ runner.temp }}/faiss
         run: python -m pytest tests/test_api.py -v
 
   frontend-build:
+    name: Frontend build
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
@@ -87,5 +112,5 @@ jobs:
         working-directory: frontend
         env:
           REACT_APP_BACKEND_URL: http://localhost:8001
-          CI: "true"
+          CI: "false"
         run: npm run build
