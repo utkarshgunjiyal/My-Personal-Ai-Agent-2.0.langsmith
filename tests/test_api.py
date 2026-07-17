@@ -1,7 +1,7 @@
 """Smoke tests that exercise the public API without invoking the LLM (where possible)."""
 import os
 import time
-
+import uuid
 import httpx
 import pytest
 
